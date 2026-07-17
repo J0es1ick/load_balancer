@@ -21,6 +21,14 @@ func TestBackendPool(t *testing.T) {
 
 		pool.MarkBackendStatus(u, true)
 		assert.True(t, pool.Backends[0].IsAlive())
+
+		assert.True(t, pool.SetBackendEnabled("localhost", false))
+		assert.False(t, pool.Backends[0].IsAlive())
+		assert.True(t, pool.Backends[0].IsHealthy())
+		assert.False(t, pool.Backends[0].IsEnabled())
+
+		assert.True(t, pool.SetBackendEnabled("localhost", true))
+		assert.True(t, pool.Backends[0].IsAlive())
 	})
 
 	t.Run("should handle unknown backend", func(t *testing.T) {

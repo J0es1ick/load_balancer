@@ -23,7 +23,6 @@ func NewTokenBucket(capacity int, rate time.Duration) *TokenBucket {
 func (tb *TokenBucket) refill() {
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill)
-	tb.lastRefill = now
 
 	newTokens := int(elapsed / tb.rate)
 	if newTokens > 0 {
@@ -31,12 +30,13 @@ func (tb *TokenBucket) refill() {
 		if tb.tokens > tb.capacity {
 			tb.tokens = tb.capacity
 		}
+		tb.lastRefill = tb.lastRefill.Add(time.Duration(newTokens) * tb.rate)
 	}
 }
 
 func (tb *TokenBucket) Take() bool {
 	tb.refill()
-	
+
 	if tb.tokens > 0 {
 		tb.tokens--
 		return true

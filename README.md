@@ -325,3 +325,15 @@ go test ./...
 ## Локальная демонстрация
 
 В репозитории уже лежат два простых backend'а в `test/backend1` и `test/backend2`. Они используются как наглядный пример распределения запросов.
+
+### Веб-dashboard
+
+В состав Docker Compose входит SPA, связанное с реальным Go-балансировщиком. Оно показывает фактический backend для каждого запроса, остаток token bucket, TCP health-state и позволяет временно исключать ноды из round-robin.
+
+```bash
+docker-compose up --build
+```
+
+Также поддерживается синтаксис Compose Plugin: `docker compose up --build`.
+
+После запуска откройте `http://localhost:3000`. Сам балансировщик по-прежнему доступен на `http://localhost:8080`.

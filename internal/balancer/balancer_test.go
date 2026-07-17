@@ -26,6 +26,7 @@ func TestLoadBalancer(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "OK", rec.Body.String())
+		assert.NotEmpty(t, rec.Header().Get("X-Balancer-Backend"))
 	})
 
 	t.Run("should return 503 when no backends available", func(t *testing.T) {
