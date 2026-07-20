@@ -1,6 +1,10 @@
 import './styles.css'
 
 type StatusCode = number
+type AppMode = 'demo' | 'live'
+
+const appMode: AppMode = import.meta.env.VITE_APP_MODE === 'demo' ? 'demo' : 'live'
+const isDemoMode = appMode === 'demo'
 
 interface BackendNode {
   id: string
@@ -52,17 +56,18 @@ interface SimulationState {
   latencies: number[]
   events: EventRecord[]
   autoTraffic: boolean
+  roundRobinCounter: number
 }
 
 const backends: BackendNode[] = [
-  { id: 'backend1', number: '01', url: 'backend1:80', alive: false, healthy: false, enabled: true, handled: 0 },
-  { id: 'backend2', number: '02', url: 'backend2:80', alive: false, healthy: false, enabled: true, handled: 0 },
+  { id: 'backend1', number: '01', url: 'backend1:80', alive: isDemoMode, healthy: isDemoMode, enabled: true, handled: 0 },
+  { id: 'backend2', number: '02', url: 'backend2:80', alive: isDemoMode, healthy: isDemoMode, enabled: true, handled: 0 },
 ]
 
 const state: SimulationState = {
   requestId: 0,
-  capacity: 100,
-  tokens: 100,
+  capacity: isDemoMode ? 8 : 100,
+  tokens: isDemoMode ? 8 : 100,
   total: 0,
   success: 0,
   rejected: 0,
@@ -70,6 +75,7 @@ const state: SimulationState = {
   latencies: [],
   events: [],
   autoTraffic: false,
+  roundRobinCounter: 0,
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')
@@ -99,7 +105,7 @@ app.innerHTML = `
 
       <nav class="desktop-nav" aria-label="Навигация">
         <a href="#simulator">Симулятор</a>
-        <a href="#architecture">Как работает</a>
+        <a href="#architecture">Обработка запроса</a>
         <a href="#config">Конфигурация</a>
       </nav>
 
@@ -113,18 +119,18 @@ app.innerHTML = `
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow"><span>01</span> HTTP load balancer laboratory</p>
-          <h1 id="hero-title">Запрос один.<br />Маршрут — <em>следующий.</em></h1>
-          <p class="hero-lead">
-            Наглядный live-dashboard Go-балансировщика: IP проходит token bucket,
-            round-robin выбирает живой backend, reverse proxy возвращает ответ.
+          <p class="eyebrow"><span>01</span> Go HTTP load balancer</p>
+          <h1 id="hero-title">HTTP-балансировщик<br />на <em>Go</em></h1>
+          <p class="hero-lead" id="hero-lead">
+            Проект распределяет HTTP-запросы между backend-серверами по round-robin,
+            ограничивает частоту по IP и исключает недоступные ноды по TCP health-check.
           </p>
           <div class="hero-actions">
             <a class="primary-link" href="#simulator">
-              Запустить запрос
+              Перейти к визуализации
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 6l4 4-4 4" /></svg>
             </a>
-            <span class="hero-note" id="hero-note">Запросы идут через реальный Go backend</span>
+            <span class="hero-note" id="hero-note">Режим live · данные получаются из Go API</span>
           </div>
         </div>
 
@@ -143,16 +149,16 @@ app.innerHTML = `
       </section>
 
       <section class="simulator-section" id="simulator" aria-labelledby="simulator-title">
-        <div class="section-index" aria-hidden="true">PLAYGROUND / 01</div>
+        <div class="section-index" aria-hidden="true">REQUEST FLOW / 01</div>
         <div class="console-frame">
           <div class="console-heading">
             <div>
-              <p class="kicker">Live traffic</p>
-              <h2 id="simulator-title">Round-robin в движении</h2>
+              <p class="kicker">Request routing</p>
+              <h2 id="simulator-title">Обработка HTTP-запроса</h2>
             </div>
             <div class="console-endpoint" aria-label="Тестовый endpoint">
               <span class="method">GET</span>
-              <code>localhost:8080/</code>
+              <code id="endpoint-address">localhost:8080/</code>
               <button class="icon-button copy-button" type="button" aria-label="Скопировать адрес" title="Скопировать адрес">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="1" /><path d="M13 7V4H4v9h3" /></svg>
               </button>
@@ -162,8 +168,8 @@ app.innerHTML = `
           <div class="lab-grid">
             <div class="network-stage" aria-label="Схема прохождения запросов">
               <div class="stage-topline">
-                <span><i class="legend-dot legend-client"></i>Client</span>
-                <span><i class="legend-dot legend-route"></i>Request path</span>
+                <span><i class="legend-dot legend-client"></i>Клиент</span>
+                <span><i class="legend-dot legend-route"></i>Маршрут запроса</span>
                 <span class="next-health">Health-check через <b id="health-countdown">5</b> сек</span>
               </div>
 
@@ -248,15 +254,15 @@ app.innerHTML = `
             <aside class="activity-panel" aria-labelledby="activity-title">
               <div class="activity-head">
                 <div>
-                  <p class="kicker">Observability</p>
-                  <h3 id="activity-title">Поток событий</h3>
+                  <p class="kicker">Event log</p>
+                  <h3 id="activity-title">Результаты запросов</h3>
                 </div>
                 <button class="text-button" id="clear-log" type="button">Очистить</button>
               </div>
               <div class="event-list" id="event-list" aria-live="polite"></div>
               <div class="activity-empty" id="activity-empty">
                 <span class="empty-cross" aria-hidden="true"></span>
-                <p>Здесь появится маршрут каждого запроса.</p>
+                <p>После отправки здесь появятся HTTP-код, выбранный backend и задержка.</p>
               </div>
             </aside>
           </div>
@@ -285,7 +291,7 @@ app.innerHTML = `
               </select>
             </div>
 
-            <button class="reset-button" id="reset-simulation" type="button" title="Сбросить лабораторию">
+            <button class="reset-button" id="reset-simulation" type="button" title="Сбросить состояние">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" /></svg>
               Сбросить
             </button>
@@ -318,9 +324,9 @@ app.innerHTML = `
 
       <section class="architecture" id="architecture" aria-labelledby="architecture-title">
         <div class="architecture-intro">
-          <p class="eyebrow"><span>02</span> Under the hood</p>
-          <h2 id="architecture-title">Три решения<br />за один проход.</h2>
-          <p>Никакой магии: последовательная цепочка из middleware, стратегии и reverse proxy.</p>
+          <p class="eyebrow"><span>02</span> Processing pipeline</p>
+          <h2 id="architecture-title">Порядок обработки<br />запроса</h2>
+          <p>Запрос последовательно проходит rate limit middleware, выбор backend и reverse proxy.</p>
         </div>
 
         <div class="flow-steps">
@@ -330,7 +336,7 @@ app.innerHTML = `
             <div>
               <p class="kicker">Gate</p>
               <h3>Token bucket</h3>
-              <p>IP-адрес становится ключом. Есть токен — запрос проходит. Bucket пуст — сразу <code>429</code>.</p>
+              <p>Ключ лимита — IP клиента. Каждый запрос расходует один токен. При пустом bucket middleware возвращает <code>429</code> до выбора backend.</p>
             </div>
             <span class="step-result">allow()</span>
           </article>
@@ -340,7 +346,7 @@ app.innerHTML = `
             <div>
               <p class="kicker">Route</p>
               <h3>Round-robin</h3>
-              <p>Счётчик выбирает следующую живую ноду. Offline backend пропускается без изменения запроса.</p>
+              <p>Стратегия последовательно выбирает следующую доступную ноду. Backend с отрицательным health-state или отключённый вручную пропускается.</p>
             </div>
             <span class="step-result">next % alive</span>
           </article>
@@ -350,7 +356,7 @@ app.innerHTML = `
             <div>
               <p class="kicker">Forward</p>
               <h3>Reverse proxy</h3>
-              <p>Стандартный <code>httputil</code> проксирует HTTP. Если живых нод нет, клиент получает <code>503</code>.</p>
+              <p><code>httputil.ReverseProxy</code> пересылает запрос на выбранный backend. Если доступных нод нет, клиент получает <code>503</code>.</p>
             </div>
             <span class="step-result">ServeHTTP()</span>
           </article>
@@ -362,7 +368,7 @@ app.innerHTML = `
           <div class="config-heading">
             <div>
               <p class="kicker">config/config.yaml</p>
-              <h2 id="config-title">Реальные параметры проекта</h2>
+              <h2 id="config-title">Параметры конфигурации</h2>
             </div>
             <span class="config-state"><i></i> Valid configuration</span>
           </div>
@@ -376,13 +382,13 @@ app.innerHTML = `
 <span class="code-key">rate_limit:</span>
   default_capacity: <span class="code-number">100</span>
   default_rate: <span class="code-value">"1s"</span></code></pre>
-          <p class="config-note"><span>!</span> Профиль Config использует реальные 100 токенов. Выбор Demo сбрасывает настоящий bucket до 8 или 12 токенов для наглядного <code>429</code>.</p>
+          <p class="config-note" id="config-note"><span>!</span> В режиме <code>live</code> выбор профиля отправляет запрос в API и сбрасывает bucket текущего клиента до 8, 12 или 100 токенов.</p>
         </div>
 
         <div class="health-panel">
           <p class="eyebrow"><span>03</span> Health-check</p>
-          <h2>Каждые 5 секунд.<br />Только TCP.</h2>
-          <p>Проверяется доступность host:port с таймаутом 2 секунды. HTTP-ответ приложения в этой версии не анализируется.</p>
+          <h2>TCP-проверка<br />каждые 5 секунд</h2>
+          <p>Балансировщик открывает TCP-соединение с host:port backend'а с таймаутом 2 секунды. HTTP-код ответа не проверяется.</p>
           <div class="health-visual" aria-hidden="true">
             <span class="health-ring ring-one"></span>
             <span class="health-ring ring-two"></span>
@@ -396,7 +402,7 @@ app.innerHTML = `
 
     <footer>
       <div class="footer-mark">BALANCER<span>/</span>LAB</div>
-      <p>Interactive documentation for a Go HTTP load balancer.</p>
+      <p>Документация и визуализация Go HTTP-балансировщика.</p>
       <a href="#top">Наверх <span>↑</span></a>
     </footer>
   </div>
@@ -433,7 +439,10 @@ const elements = {
   runtimeState: query<HTMLElement>('#runtime-state'),
   runtimeLabel: query<HTMLElement>('#runtime-label'),
   runtimeVersion: query<HTMLElement>('#runtime-version'),
+  heroLead: query<HTMLElement>('#hero-lead'),
   heroNote: query<HTMLElement>('#hero-note'),
+  endpointAddress: query<HTMLElement>('#endpoint-address'),
+  configNote: query<HTMLElement>('#config-note'),
   clientIP: query<HTMLElement>('#client-ip'),
   capacitySelect: query<HTMLSelectElement>('#capacity-select'),
 }
@@ -510,14 +519,41 @@ function animatePacket(backendIndex: number | null, blocked = false): void {
 }
 
 function setConnectionState(connected: boolean): void {
+  if (isDemoMode) {
+    backendConnected = true
+    elements.runtimeState.classList.remove('is-offline', 'is-connecting')
+    elements.runtimeState.title = 'Demo mode без подключения к API'
+    elements.runtimeLabel.textContent = 'Demo mode'
+    elements.runtimeVersion.textContent = 'STATIC'
+    elements.heroLead.textContent =
+      'Браузер локально воспроизводит token bucket, round-robin и состояние двух backend-серверов. Запросы в Go API не отправляются.'
+    elements.heroNote.textContent = 'Режим demo · API и PostgreSQL не используются'
+    elements.endpointAddress.textContent = 'demo://round-robin'
+    elements.configNote.innerHTML =
+      '<span>!</span> В режиме <code>demo</code> интерфейс использует локальную модель этих параметров. Режим <code>live</code> читает и изменяет состояние через Go API.'
+    elements.clientIP.textContent = '192.168.1.24'
+    elements.capacitySelect.value = String(state.capacity)
+    elements.sendButton.disabled = false
+    elements.burstButton.disabled = false
+    elements.autoButton.disabled = false
+    renderBackends()
+    return
+  }
+
   backendConnected = connected
   elements.runtimeState.classList.toggle('is-offline', !connected)
   elements.runtimeState.classList.toggle('is-connecting', false)
-  elements.runtimeLabel.textContent = connected ? 'Go backend live' : 'Backend offline'
+  elements.runtimeState.title = connected ? 'Соединено с Go API' : 'Нет соединения с Go API'
+  elements.runtimeLabel.textContent = connected ? 'Live mode' : 'API unavailable'
   elements.runtimeVersion.textContent = connected ? 'API / LIVE' : 'RETRYING'
+  elements.heroLead.textContent =
+    'Интерфейс отправляет запросы в Go-балансировщик и показывает выбранный backend, остаток token bucket, HTTP-код и TCP health-state.'
   elements.heroNote.textContent = connected
-    ? 'Запросы идут через реальный Go backend'
-    : 'Запустите docker compose up --build'
+    ? 'Режим live · данные получаются из /api/dashboard/*'
+    : 'Go API недоступен · запустите docker compose up --build'
+  elements.endpointAddress.textContent = 'localhost:8080/'
+  elements.configNote.innerHTML =
+    '<span>!</span> В режиме <code>live</code> выбор профиля отправляет запрос в API и сбрасывает bucket текущего клиента до 8, 12 или 100 токенов.'
   elements.sendButton.disabled = !connected
   elements.burstButton.disabled = !connected
   elements.autoButton.disabled = !connected
@@ -531,6 +567,16 @@ function setConnectionState(connected: boolean): void {
 }
 
 async function refreshStatus(announce = false): Promise<boolean> {
+  if (isDemoMode) {
+    const wasConnected = backendConnected
+    setConnectionState(true)
+    renderState()
+    if (announce && !wasConnected) {
+      addEvent('SYS', 'Демо-режим готов', 'автономная модель · API не требуется')
+    }
+    return true
+  }
+
   try {
     const response = await fetch('/api/dashboard/status', { cache: 'no-store' })
     if (!response.ok) throw new Error(`Status API returned ${response.status}`)
@@ -571,11 +617,64 @@ async function refreshStatus(announce = false): Promise<boolean> {
 }
 
 function queueStatusRefresh(): void {
+  if (isDemoMode) return
   window.clearTimeout(statusRefreshTimer)
   statusRefreshTimer = window.setTimeout(() => void refreshStatus(), 500)
 }
 
+function pickDemoBackend(): number | null {
+  const available = backends
+    .map((backend, index) => ({ backend, index }))
+    .filter(({ backend }) => backend.alive && backend.enabled)
+
+  if (available.length === 0) return null
+  const selected = available[state.roundRobinCounter % available.length]
+  state.roundRobinCounter += 1
+  return selected.index
+}
+
+function sendDemoRequest(): void {
+  state.requestId += 1
+  state.total += 1
+  const requestLabel = `req_${String(state.requestId).padStart(3, '0')}`
+
+  if (state.tokens <= 0) {
+    state.rejected += 1
+    animatePacket(null, true)
+    addEvent(429, `${requestLabel} заблокирован`, 'демо token bucket исчерпан')
+    showToast('429 · Too Many Requests', 'error')
+    renderState()
+    return
+  }
+
+  state.tokens -= 1
+  const backendIndex = pickDemoBackend()
+  if (backendIndex === null) {
+    state.unavailable += 1
+    animatePacket(null, true)
+    addEvent(503, `${requestLabel} без маршрута`, 'в демо-pool нет доступных backend’ов')
+    showToast('503 · Service Unavailable', 'error')
+    renderState()
+    return
+  }
+
+  const backend = backends[backendIndex]
+  const latency = 17 + backendIndex * 7 + Math.floor(Math.random() * 8)
+  backend.handled += 1
+  state.success += 1
+  state.latencies.push(latency)
+  state.latencies = state.latencies.slice(-20)
+  animatePacket(backendIndex)
+  addEvent(200, `${requestLabel} → backend ${backend.number}`, `${backend.url} · ${latency} ms · simulated`)
+  renderState()
+}
+
 async function sendRequest(): Promise<void> {
+  if (isDemoMode) {
+    sendDemoRequest()
+    return
+  }
+
   state.requestId += 1
   const requestLabel = `req_${String(state.requestId).padStart(3, '0')}`
   const startedAt = performance.now()
@@ -707,6 +806,7 @@ function toggleAutoTraffic(): void {
 async function resetSimulation(): Promise<void> {
   window.clearInterval(autoTrafficTimer)
   state.requestId = 0
+  state.roundRobinCounter = 0
   state.total = 0
   state.success = 0
   state.rejected = 0
@@ -718,6 +818,19 @@ async function resetSimulation(): Promise<void> {
   elements.autoButton.setAttribute('aria-pressed', 'false')
   renderEvents()
   renderState()
+
+  if (isDemoMode) {
+    state.tokens = state.capacity
+    backends.forEach((backend) => {
+      backend.enabled = true
+      backend.healthy = true
+      backend.alive = true
+      backend.handled = 0
+    })
+    renderState()
+    showToast('Демо-состояние сброшено')
+    return
+  }
 
   try {
     const requests = [
@@ -757,6 +870,16 @@ query<HTMLButtonElement>('#reset-simulation').addEventListener('click', () => vo
 query<HTMLSelectElement>('#capacity-select').addEventListener('change', async (event) => {
   const select = event.currentTarget as HTMLSelectElement
   const capacity = Number(select.value)
+
+  if (isDemoMode) {
+    state.capacity = capacity
+    state.tokens = capacity
+    renderState()
+    addEvent('SYS', 'Демо bucket сброшен', `${capacity} tokens · refill 1 token/sec`)
+    showToast(`Демо bucket: ${capacity} токенов`)
+    return
+  }
+
   try {
     const response = await fetch('/api/dashboard/limit', {
       method: 'POST',
@@ -782,6 +905,20 @@ document.querySelectorAll<HTMLButtonElement>('[data-backend]').forEach((element)
     const index = Number(element.dataset.backend)
     const backend = backends[index]
     const enabled = !backend.enabled
+
+    if (isDemoMode) {
+      backend.enabled = enabled
+      backend.alive = backend.healthy && enabled
+      renderBackends()
+      addEvent(
+        'SYS',
+        `Backend ${backend.number}: ${enabled ? 'enabled' : 'disabled'}`,
+        enabled ? 'возвращён в демо-pool' : 'исключён из демо-pool',
+      )
+      showToast(`Backend ${backend.number}: ${enabled ? 'enabled' : 'disabled'}`)
+      return
+    }
+
     element.disabled = true
 
     try {
@@ -810,11 +947,12 @@ query<HTMLButtonElement>('#clear-log').addEventListener('click', () => {
 })
 
 query<HTMLButtonElement>('.copy-button').addEventListener('click', async () => {
+  const address = isDemoMode ? 'demo://round-robin' : 'http://localhost:8080/'
   try {
-    await navigator.clipboard.writeText('http://localhost:8080/')
+    await navigator.clipboard.writeText(address)
     showToast('Адрес скопирован')
   } catch {
-    showToast('localhost:8080/')
+    showToast(address)
   }
 })
 
@@ -834,13 +972,23 @@ window.setInterval(() => {
       node.classList.add('health-scan')
       window.setTimeout(() => node.classList.remove('health-scan'), 650)
     })
-    void refreshStatus()
+    if (!isDemoMode) void refreshStatus()
   }
   elements.healthCountdown.textContent = String(healthCountdown)
 }, 1000)
 
+window.setInterval(() => {
+  if (!isDemoMode || state.tokens >= state.capacity) return
+  state.tokens += 1
+  renderState()
+}, 1000)
+
 renderEvents()
 renderState()
-setConnectionState(false)
-void refreshStatus(true)
-window.setInterval(() => void refreshStatus(), 2000)
+if (isDemoMode) {
+  void refreshStatus(true)
+} else {
+  setConnectionState(false)
+  void refreshStatus(true)
+  window.setInterval(() => void refreshStatus(), 2000)
+}

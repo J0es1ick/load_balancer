@@ -4,8 +4,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "tsc && vite build",
+    "dev": "npm run dev:live",
+    "dev:live": "vite --mode live --host 0.0.0.0",
+    "dev:demo": "vite --mode demo --host 0.0.0.0",
+    "build": "npm run build:live",
+    "build:live": "tsc && vite build --mode live",
+    "build:demo": "tsc && vite build --mode demo",
     "preview": "vite preview"
   },
   "devDependencies": {

@@ -328,7 +328,12 @@ go test ./...
 
 ### Веб-dashboard
 
-В состав Docker Compose входит SPA, связанное с реальным Go-балансировщиком. Оно показывает фактический backend для каждого запроса, остаток token bucket, TCP health-state и позволяет временно исключать ноды из round-robin.
+SPA поддерживает два режима через Vite `.env`:
+
+- `live` — полноценная интеграция с Go-балансировщиком: фактический backend для каждого запроса, реальный token bucket, TCP health-state и управление нодами;
+- `demo` — автономная интерактивная документация для GitHub Pages, которая воспроизводит те же сценарии прямо в браузере без сервера и базы данных.
+
+Обычный локальный запуск по-прежнему поднимает `live`-режим:
 
 ```bash
 docker-compose up --build
@@ -337,3 +342,13 @@ docker-compose up --build
 Также поддерживается синтаксис Compose Plugin: `docker compose up --build`.
 
 После запуска откройте `http://localhost:3000`. Сам балансировщик по-прежнему доступен на `http://localhost:8080`.
+
+Для автономного режима:
+
+```bash
+cd frontend
+npm ci
+npm run dev:demo
+```
+
+Деплой GitHub Pages выполняет workflow `.github/workflows/pages.yml`. Подробные команды и переменные окружения описаны в `frontend/README.md`.
