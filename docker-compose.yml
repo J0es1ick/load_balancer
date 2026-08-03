@@ -6,6 +6,9 @@ services:
       - "3000:80"
     depends_on:
       - balancer
+    networks:
+      app:
+        ipv4_address: 172.30.0.10
 
   balancer:
     build: .
@@ -20,6 +23,10 @@ services:
         condition: service_healthy
     environment:
       - CONFIG_PATH=/config/config.yaml
+    volumes:
+      - ./config:/config:ro
+    networks:
+      - app
 
   postgres:
     image: postgres:latest
@@ -36,6 +43,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - app
 
   backend1:
     image: nginx
@@ -48,6 +57,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - app
 
   backend2:
     image: nginx
@@ -60,6 +71,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - app
 
 volumes:
   postgres_data:
+
+networks:
+  app:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

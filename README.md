@@ -68,6 +68,16 @@ test/backend1, test/backend2  — простые backend'ы для локаль�
 ```yaml
 server:
   port: "8080"
+  trusted_proxies:
+    - "127.0.0.1/32"
+    - "::1/128"
+    - "172.30.0.10/32"
+  read_header_timeout: "5s"
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+  shutdown_timeout: "5s"
+  max_header_bytes: 1048576
 
 database:
   host: "postgres"
@@ -85,6 +95,10 @@ backends:
 rate_limit:
   default_capacity: 100
   default_rate: "1s"
+
+health_check:
+  interval: "5s"
+  timeout: "2s"
 ```
 
 ### Поля конфигурации
@@ -92,6 +106,19 @@ rate_limit:
 #### `server.port`
 
 Порт, на котором поднимается HTTP-сервер балансировщика.
+
+#### `server.trusted_proxies`
+
+Список IP-адресов и CIDR-сетей reverse proxy, от которых разрешено принимать `X-Forwarded-For` и `X-Real-IP`. Заголовки от остальных клиентов игнорируются. В Docker Compose frontend-nginx закреплён за адресом `172.30.0.10`, поэтому доверять всей приватной сети не требуется.
+
+#### HTTP-таймауты
+
+- `read_header_timeout` — максимальное время чтения HTTP-заголовков;
+- `read_timeout` — максимальное время чтения запроса;
+- `write_timeout` — максимальное время записи ответа;
+- `idle_timeout` — таймаут keep-alive соединения;
+- `shutdown_timeout` — время на graceful shutdown;
+- `max_header_bytes` — максимальный размер заголовков запроса.
 
 #### `database`
 
@@ -119,6 +146,32 @@ rate_limit:
 
 Пример интерпретации: если `default_capacity = 100` и `default_rate = "1s"`, то у клиента есть 100 запросов в запасе, а затем токены будут восстанавливаться по одному раз в секунду.
 
+#### `health_check`
+
+- `interval` — период между TCP-проверками;
+- `timeout` — таймаут одного TCP-подключения.
+
+## Перезагрузка конфигурации
+
+Сигнал `SIGHUP` перечитывает файл и без остановки процесса применяет:
+
+- список backend'ов;
+- capacity и rate для новых и существующих bucket'ов;
+- interval и timeout health-check;
+- список доверенных reverse proxy.
+
+Изменения подключения к PostgreSQL, HTTP-порта и HTTP-таймаутов отклоняются с сообщением в логах: для них требуется перезапуск процесса.
+
+```bash
+kill -HUP <pid>
+```
+
+Для Docker Compose:
+
+```bash
+docker kill --signal=HUP test-assignment-balancer-1
+```
+
 ## Rate limiting
 
 Rate limit реализован по схеме token bucket.
@@ -133,7 +186,7 @@ Rate limit реализован по схеме token bucket.
 
 ### Где хранятся данные
 
-Состояние rate limit хранится в PostgreSQL в таблице `ratelimit`.
+Состояние rate limit хранится в PostgreSQL в таблице `ratelimit`. Обновление одного bucket выполняется в настоящей SQL-транзакции под advisory lock для его ключа. Поэтому запросы разных IP обрабатываются параллельно, а несколько экземпляров балансировщика не теряют обновления одного bucket.
 
 Структура таблицы создаётся автоматически при старте приложения:
 
@@ -300,26 +353,24 @@ go test ./...
 
 ## Известные ограничения
 
-- Перезагрузка конфигурации по `SIGHUP` реализована, но текущие компоненты после старта продолжают использовать уже загруженные зависимости. То есть изменение `config.yaml` во время работы не меняет поведение запущенного процесса без дополнительной логики повторной инициализации.
 - Health-check проверяет доступность backend'а по TCP, а не HTTP-ответ.
 - Rate limiting привязан к IP-адресу клиента. Если несколько пользователей выходят в интернет через один NAT, они могут делить один и тот же лимит.
-- Ошибка при парсинге backend URL приводит к аварийному завершению при старте, потому что `url.Parse` обрабатывается через `log.Fatal`.
+- Служебные endpoints `/api/dashboard/*` предназначены для локальной демонстрации и пока не защищены авторизацией. Не следует открывать их в публичной production-среде.
 - Для простоты не реализованы:
   - sticky sessions;
   - weighted round-robin;
   - retries;
   - circuit breaker;
   - metrics и tracing;
-  - административный API.
+  - connection draining.
 
 ## Что можно улучшить дальше (возможно будет реализовано, когда появится время)
 
 - добавить поддержку нескольких стратегий балансировки;
 - сделать HTTP-based health-check;
-- вынести rate limit в отдельную БД/Redis-реализацию;
+- добавить Redis-реализацию rate limit для сценариев с очень высокой нагрузкой;
 - добавить метрики Prometheus;
 - добавить structured logging;
-- сделать динамическую перезагрузку конфигурации на практике;
 - добавить `/healthz` и `/metrics`.
 
 ## Локальная демонстрация
@@ -351,4 +402,4 @@ npm ci
 npm run dev:demo
 ```
 
-Деплой GitHub Pages выполняет workflow `.github/workflows/pages.yml`. Подробные команды и переменные окружения описаны в `frontend/README.md`.
+Деплой GitHub Pages выполняет workflow `.github/workflows/workflow.yml`. Подробные команды и переменные окружения описаны в `frontend/README.md`.

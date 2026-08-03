@@ -6,6 +6,7 @@ import (
 
 	"github.com/J0es1ick/test-assignment/internal/balancer"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRoundRobinStrategy(t *testing.T) {
@@ -15,7 +16,11 @@ func TestRoundRobinStrategy(t *testing.T) {
 		"http://backend3:8080",
 	}
 
-	pool := balancer.NewBackendPool(backends)
+	pool, err := balancer.NewBackendPool(backends)
+	require.NoError(t, err)
+	for _, backend := range pool.Backends {
+		backend.SetAlive(true)
+	}
 	strategy := balancer.NewRoundRobinStrategy()
 
 	t.Run("should rotate backends in order", func(t *testing.T) {

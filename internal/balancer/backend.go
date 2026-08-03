@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -86,13 +87,26 @@ type BackendPool struct {
 	mu       sync.RWMutex
 }
 
-func NewBackendPool(backendURLs []string) *BackendPool {
-	var backends []*Backend
+func NewBackendPool(backendURLs []string) (*BackendPool, error) {
+	backends, err := buildBackends(backendURLs)
+	if err != nil {
+		return nil, err
+	}
+	return &BackendPool{Backends: backends}, nil
+}
+
+func buildBackends(backendURLs []string) ([]*Backend, error) {
+	backends := make([]*Backend, 0, len(backendURLs))
+	backendIDs := make(map[string]struct{}, len(backendURLs))
 	for _, u := range backendURLs {
 		backendURL, err := url.Parse(u)
-		if err != nil {
-			log.Fatal(err)
+		if err != nil || backendURL.Host == "" || (backendURL.Scheme != "http" && backendURL.Scheme != "https") {
+			return nil, fmt.Errorf("invalid backend URL %q", u)
 		}
+		if _, exists := backendIDs[backendURL.Hostname()]; exists {
+			return nil, fmt.Errorf("duplicate backend ID %q", backendURL.Hostname())
+		}
+		backendIDs[backendURL.Hostname()] = struct{}{}
 
 		proxy := httputil.NewSingleHostReverseProxy(backendURL)
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) {
@@ -102,12 +116,39 @@ func NewBackendPool(backendURLs []string) *BackendPool {
 
 		backends = append(backends, &Backend{
 			URL:          backendURL,
-			Alive:        true,
+			Alive:        false,
 			Enabled:      true,
 			ReverseProxy: proxy,
 		})
 	}
-	return &BackendPool{Backends: backends}
+	return backends, nil
+}
+
+func (p *BackendPool) ReplaceBackends(backendURLs []string) error {
+	replacement, err := buildBackends(backendURLs)
+	if err != nil {
+		return err
+	}
+
+	p.mu.RLock()
+	current := make(map[string]*Backend, len(p.Backends))
+	for _, backend := range p.Backends {
+		current[backend.URL.String()] = backend
+	}
+	p.mu.RUnlock()
+
+	for _, backend := range replacement {
+		if previous, exists := current[backend.URL.String()]; exists {
+			backend.SetAlive(previous.IsHealthy())
+			backend.SetEnabled(previous.IsEnabled())
+			backend.requests.Store(previous.requests.Load())
+		}
+	}
+
+	p.mu.Lock()
+	p.Backends = replacement
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *BackendPool) GetBackends() []*Backend {

@@ -2,8 +2,7 @@ package ratelimit
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -34,7 +33,7 @@ type TokenBucketLimiter struct {
 	defaultCapacity int
 	defaultRate     time.Duration
 	storage         Storage
-	mux             sync.Mutex
+	configMu        sync.RWMutex
 }
 
 func NewTokenBucketLimiter(defaultCapacity int, defaultRate time.Duration, storage Storage) *TokenBucketLimiter {
@@ -51,8 +50,8 @@ func (l *TokenBucketLimiter) Allow(ctx context.Context, key string) (bool, error
 }
 
 func (l *TokenBucketLimiter) AllowWithState(ctx context.Context, key string) (LimitDecision, error) {
-	l.mux.Lock()
-	defer l.mux.Unlock()
+	l.configMu.RLock()
+	defer l.configMu.RUnlock()
 
 	var decision LimitDecision
 	err := l.storage.Update(ctx, key, func(b *TokenBucket) (*TokenBucket, error) {
@@ -64,16 +63,12 @@ func (l *TokenBucketLimiter) AllowWithState(ctx context.Context, key string) (Li
 		return b, nil
 	})
 
-	if errors.Is(err, sql.ErrNoRows) {
-		return LimitDecision{}, nil
-	}
-
 	return decision, err
 }
 
 func (l *TokenBucketLimiter) Snapshot(ctx context.Context, key string) (BucketState, error) {
-	l.mux.Lock()
-	defer l.mux.Unlock()
+	l.configMu.RLock()
+	defer l.configMu.RUnlock()
 
 	state := BucketState{
 		Capacity: l.defaultCapacity,
@@ -94,8 +89,12 @@ func (l *TokenBucketLimiter) Snapshot(ctx context.Context, key string) (BucketSt
 }
 
 func (l *TokenBucketLimiter) Reset(ctx context.Context, key string, capacity int) (BucketState, error) {
-	l.mux.Lock()
-	defer l.mux.Unlock()
+	if capacity < 1 {
+		return BucketState{}, fmt.Errorf("rate limit capacity must be positive")
+	}
+
+	l.configMu.RLock()
+	defer l.configMu.RUnlock()
 
 	bucket := NewTokenBucket(capacity, l.defaultRate)
 	if err := l.storage.Set(ctx, key, bucket); err != nil {
@@ -103,6 +102,27 @@ func (l *TokenBucketLimiter) Reset(ctx context.Context, key string, capacity int
 	}
 
 	return bucketState(bucket), nil
+}
+
+func (l *TokenBucketLimiter) Reconfigure(ctx context.Context, capacity int, rate time.Duration) error {
+	if capacity < 1 || rate <= 0 {
+		return fmt.Errorf("rate limit capacity and rate must be positive")
+	}
+
+	l.configMu.Lock()
+	defer l.configMu.Unlock()
+
+	storage, ok := l.storage.(ReconfigurableStorage)
+	if !ok {
+		return fmt.Errorf("rate limit storage does not support reconfiguration")
+	}
+	if err := storage.Reconfigure(ctx, capacity, rate); err != nil {
+		return err
+	}
+
+	l.defaultCapacity = capacity
+	l.defaultRate = rate
+	return nil
 }
 
 func bucketState(bucket *TokenBucket) BucketState {

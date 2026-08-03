@@ -7,6 +7,7 @@ import (
 
 	"github.com/J0es1ick/test-assignment/internal/balancer"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadBalancer(t *testing.T) {
@@ -15,7 +16,9 @@ func TestLoadBalancer(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	pool := balancer.NewBackendPool([]string{backend.URL})
+	pool, err := balancer.NewBackendPool([]string{backend.URL})
+	require.NoError(t, err)
+	pool.Backends[0].SetAlive(true)
 	lb := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
 
 	t.Run("should proxy requests to backends", func(t *testing.T) {
@@ -30,7 +33,8 @@ func TestLoadBalancer(t *testing.T) {
 	})
 
 	t.Run("should return 503 when no backends available", func(t *testing.T) {
-		emptyPool := balancer.NewBackendPool([]string{})
+		emptyPool, err := balancer.NewBackendPool([]string{})
+		require.NoError(t, err)
 		lb := balancer.NewLoadBalancer(emptyPool, balancer.NewRoundRobinStrategy())
 
 		req := httptest.NewRequest("GET", "/", nil)

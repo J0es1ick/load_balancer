@@ -59,7 +59,7 @@ npm run build:live
 
 ## GitHub Pages
 
-Workflow `.github/workflows/pages.yml` при push в `master`:
+Workflow `.github/workflows/workflow.yml` при push в `master`:
 
 1. устанавливает зависимости из `frontend/package-lock.json`;
 2. запускает `npm run build:demo`;

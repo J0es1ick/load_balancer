@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,65 +16,174 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("Balancer stopped with error: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := config.InitConfig()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	go func() {
-		sigchan := make(chan os.Signal, 1)
-		signal.Notify(sigchan, syscall.SIGHUP)
-		for {
-			<-sigchan
-			if err := config.ReloadConfig(); err != nil {
-				log.Printf("Config reload failed: %v", err)
-			}
-		}
-	}()
-
-	backendPool := balancer.NewBackendPool(cfg.Backends)
-	lb := balancer.NewLoadBalancer(backendPool, balancer.NewRoundRobinStrategy())
-
-	healthChecker := balancer.NewHealthChecker(backendPool, 5*time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go healthChecker.Start(ctx)
-
-	db, err := ratelimit.NewDatabase(cfg)
+	backendPool, err := balancer.NewBackendPool(cfg.Backends)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		return fmt.Errorf("create backend pool: %w", err)
 	}
+	loadBalancer := balancer.NewLoadBalancer(backendPool, balancer.NewRoundRobinStrategy())
 
-	if err := db.Init(ctx); err != nil {
-		log.Fatalf("Failed to init database: %v", err)
+	rootContext, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+
+	database, err := ratelimit.NewDatabase(cfg)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
 	}
-
-	cleanupCtx := context.Background()
-    db.StartCleanupWorker(cleanupCtx, 6*time.Hour)
-	
-	limiter := ratelimit.NewTokenBucketLimiter(cfg.Ratelimit.DefaultCapacity, cfg.Ratelimit.DefaultRate, db)
-
-	server := server.NewServer(cfg.Server.Port, lb, limiter)
-	
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		if err := server.Start(); err != nil {
-			log.Printf("Server error: %v", err)
-			quit <- syscall.SIGTERM
+	defer func() {
+		if err := database.Close(); err != nil {
+			log.Printf("Database close error: %v", err)
 		}
 	}()
 
-	<- quit
-	log.Println("Shutting down server")
+	if err := database.Init(rootContext); err != nil {
+		return fmt.Errorf("initialize database: %w", err)
+	}
+	database.StartCleanupWorker(rootContext, 6*time.Hour)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	limiter := ratelimit.NewTokenBucketLimiter(
+		cfg.RateLimit.DefaultCapacity,
+		cfg.RateLimit.DefaultRate,
+		database,
+	)
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+	healthChecker := balancer.NewHealthChecker(
+		backendPool,
+		cfg.HealthCheck.Interval,
+		cfg.HealthCheck.Timeout,
+	)
+	healthChecker.Check(rootContext)
+	go healthChecker.Start(rootContext)
+
+	httpServer, err := server.NewServer(serverOptions(cfg), loadBalancer, limiter)
+	if err != nil {
+		return fmt.Errorf("create server: %w", err)
 	}
 
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- httpServer.Start()
+	}()
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+
+	currentConfig := cfg
+	running := true
+	for running {
+		select {
+		case signalValue := <-signals:
+			if signalValue == syscall.SIGHUP {
+				nextConfig, err := config.InitConfig()
+				if err != nil {
+					log.Printf("Config reload rejected: %v", err)
+					continue
+				}
+				if err := applyReload(
+					rootContext,
+					currentConfig,
+					nextConfig,
+					backendPool,
+					healthChecker,
+					limiter,
+					httpServer,
+				); err != nil {
+					log.Printf("Config reload rejected: %v", err)
+					continue
+				}
+				currentConfig = nextConfig
+				log.Println("Configuration reloaded")
+				continue
+			}
+			log.Printf("Received %s, shutting down", signalValue)
+			running = false
+		case err := <-serverErrors:
+			if err != nil {
+				return fmt.Errorf("HTTP server: %w", err)
+			}
+			running = false
+		}
+	}
+
+	shutdownContext, cancelShutdown := context.WithTimeout(
+		context.Background(),
+		currentConfig.Server.ShutdownTimeout,
+	)
+	defer cancelShutdown()
+	if err := httpServer.Shutdown(shutdownContext); err != nil {
+		return fmt.Errorf("shutdown server: %w", err)
+	}
+
+	stopWorkers()
 	log.Println("Server gracefully stopped")
+	return nil
+}
+
+func applyReload(
+	ctx context.Context,
+	currentConfig *config.Config,
+	nextConfig *config.Config,
+	backendPool *balancer.BackendPool,
+	healthChecker *balancer.HealthChecker,
+	limiter *ratelimit.TokenBucketLimiter,
+	httpServer *server.Server,
+) error {
+	if err := config.ValidateReload(currentConfig, nextConfig); err != nil {
+		return err
+	}
+
+	if _, err := balancer.NewBackendPool(nextConfig.Backends); err != nil {
+		return err
+	}
+	if err := limiter.Reconfigure(
+		ctx,
+		nextConfig.RateLimit.DefaultCapacity,
+		nextConfig.RateLimit.DefaultRate,
+	); err != nil {
+		return fmt.Errorf("reconfigure rate limiter: %w", err)
+	}
+	if err := backendPool.ReplaceBackends(nextConfig.Backends); err != nil {
+		return fmt.Errorf("replace backends: %w", err)
+	}
+	if err := healthChecker.Update(
+		nextConfig.HealthCheck.Interval,
+		nextConfig.HealthCheck.Timeout,
+	); err != nil {
+		return err
+	}
+	if err := httpServer.UpdateRuntime(
+		nextConfig.Server.TrustedProxies,
+		nextConfig.HealthCheck.Interval,
+		nextConfig.HealthCheck.Timeout,
+	); err != nil {
+		return err
+	}
+	healthChecker.Check(ctx)
+	return nil
+}
+
+func serverOptions(cfg *config.Config) server.Options {
+	return server.Options{
+		Port:              cfg.Server.Port,
+		TrustedProxies:    cfg.Server.TrustedProxies,
+		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+		HealthInterval:    cfg.HealthCheck.Interval,
+		HealthTimeout:     cfg.HealthCheck.Timeout,
+	}
 }

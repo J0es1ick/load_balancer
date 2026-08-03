@@ -62,10 +62,14 @@ func TestDashboardAPIUsesRealBalancerAndLimiter(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	pool := balancer.NewBackendPool([]string{backend.URL})
+	pool, err := balancer.NewBackendPool([]string{backend.URL})
+	require.NoError(t, err)
+	pool.Backends[0].SetAlive(true)
 	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
 	limiter := ratelimit.NewTokenBucketLimiter(2, time.Second, &memoryStorage{})
-	api := server.NewServer("0", loadBalancer, limiter).Handler()
+	httpServer, err := server.NewServer(testServerOptions(), loadBalancer, limiter)
+	require.NoError(t, err)
+	api := httpServer.Handler()
 
 	t.Run("reports live state", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
@@ -126,4 +130,64 @@ func TestDashboardAPIUsesRealBalancerAndLimiter(t *testing.T) {
 		api.ServeHTTP(second, dashboardRequest(http.MethodGet, "/api/dashboard/request", ""))
 		assert.Equal(t, http.StatusTooManyRequests, second.Code)
 	})
+}
+
+func TestClientIPResolution(t *testing.T) {
+	pool, err := balancer.NewBackendPool(nil)
+	require.NoError(t, err)
+	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
+
+	t.Run("ignores forwarded headers from an untrusted peer", func(t *testing.T) {
+		limiter := ratelimit.NewTokenBucketLimiter(2, time.Second, &memoryStorage{})
+		httpServer, err := server.NewServer(testServerOptions(), loadBalancer, limiter)
+		require.NoError(t, err)
+
+		request := dashboardRequest(http.MethodGet, "/api/dashboard/status", "")
+		request.RemoteAddr = "198.51.100.10:41000"
+		request.Header.Set("X-Forwarded-For", "203.0.113.9")
+		recorder := httptest.NewRecorder()
+		httpServer.Handler().ServeHTTP(recorder, request)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		assert.Equal(t, "198.51.100.10", responseClientIP(t, recorder))
+	})
+
+	t.Run("walks a trusted proxy chain from right to left", func(t *testing.T) {
+		options := testServerOptions()
+		options.TrustedProxies = []string{"192.0.2.0/24", "10.0.0.0/8"}
+		limiter := ratelimit.NewTokenBucketLimiter(2, time.Second, &memoryStorage{})
+		httpServer, err := server.NewServer(options, loadBalancer, limiter)
+		require.NoError(t, err)
+
+		request := dashboardRequest(http.MethodGet, "/api/dashboard/status", "")
+		request.RemoteAddr = "192.0.2.10:41000"
+		request.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.5")
+		recorder := httptest.NewRecorder()
+		httpServer.Handler().ServeHTTP(recorder, request)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		assert.Equal(t, "203.0.113.9", responseClientIP(t, recorder))
+	})
+}
+
+func testServerOptions() server.Options {
+	return server.Options{
+		Port:              "8080",
+		ReadHeaderTimeout: time.Second,
+		ReadTimeout:       time.Second,
+		WriteTimeout:      time.Second,
+		IdleTimeout:       time.Second,
+		MaxHeaderBytes:    1 << 20,
+		HealthInterval:    5 * time.Second,
+		HealthTimeout:     2 * time.Second,
+	}
+}
+
+func responseClientIP(t *testing.T, recorder *httptest.ResponseRecorder) string {
+	t.Helper()
+	var response struct {
+		ClientIP string `json:"client_ip"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	return response.ClientIP
 }
