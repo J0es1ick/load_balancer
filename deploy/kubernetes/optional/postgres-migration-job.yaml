@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: balancer-postgres-migrate
+  namespace: load-balancer
+  labels:
+    app.kubernetes.io/name: balancer
+    app.kubernetes.io/component: migration
+  annotations:
+    description: Apply this Job before the Deployment when rate_limit.storage is postgres
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: balancer-migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: ghcr.io/OWNER/REPOSITORY-balancer:v0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: CONFIG_PATH, value: /config/config.yaml }
+            - { name: MIGRATE_ONLY, value: "true" }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: balancer-secrets, key: postgres-password },
+                }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: balancer-config }
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }

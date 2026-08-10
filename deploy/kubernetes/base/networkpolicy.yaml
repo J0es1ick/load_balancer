@@ -1,0 +1,58 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: load-balancer
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-ingress
+  namespace: load-balancer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: balancer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { networking.k8s.io/ingress-controller: "true" }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-management
+  namespace: load-balancer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: balancer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: balancer-console }
+        - namespaceSelector:
+            matchLabels: { observability: "true" }
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-console-access
+  namespace: load-balancer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: balancer-console }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { access-to-balancer-console: "true" }
+      ports:
+        - { protocol: TCP, port: 8080 }

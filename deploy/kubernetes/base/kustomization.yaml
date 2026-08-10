@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - balancer.yaml
+  - frontend.yaml
+  - availability.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+images:
+  - name: ghcr.io/owner/cloud-test-assignment-balancer
+    newName: ghcr.io/OWNER/REPOSITORY-balancer
+    newTag: v0.1.0
+  - name: ghcr.io/owner/cloud-test-assignment-frontend
+    newName: ghcr.io/OWNER/REPOSITORY-frontend
+    newTag: v0.1.0

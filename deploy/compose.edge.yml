@@ -1,0 +1,27 @@
+services:
+  edge:
+    image: caddy:2.10.2-alpine
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+      CONSOLE_HOST: ${CONSOLE_HOST:-console.localhost}
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "127.0.0.1:${EDGE_HTTPS_PORT:-8443}:8443"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks:
+      app:
+        ipv4_address: 172.30.0.11
+
+volumes:
+  caddy_data:
+  caddy_config:

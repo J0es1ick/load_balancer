@@ -1,0 +1,50 @@
+groups:
+  - name: go-load-balancer
+    rules:
+      - alert: LoadBalancerHasNoAvailableBackends
+        expr: sum(load_balancer_backend_available) < 1
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: No backend is eligible for routing
+          description: All configured backends are unhealthy, disabled, draining or ejected.
+
+      - alert: LoadBalancerRateLimitStorageDegraded
+        expr: load_balancer_rate_limit_storage_healthy == 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Distributed rate-limit storage is unavailable
+          description: Check the configured failure policy before the fallback diverges between replicas.
+
+      - alert: LoadBalancerHighServerErrorRatio
+        expr: sum(rate(load_balancer_http_requests_total{listener="public",code=~"5.."}[5m])) / clamp_min(sum(rate(load_balancer_http_requests_total{listener="public"}[5m])), 0.001) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Public 5xx ratio is above 5 percent
+          description: Inspect upstream attempts, backend state and overload protection events.
+
+      - alert: LoadBalancerHighP95Latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(load_balancer_http_request_duration_seconds_bucket{listener="public"}[5m]))) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Public p95 latency is above 500 ms
+          description: Validate upstream latency and rate-limit storage latency on the target infrastructure.
+
+      - alert: LoadBalancerOverloadProtectionActive
+        expr: sum(rate(load_balancer_protection_events_total{kind=~"global_concurrency_limit|backend_concurrency_limit"}[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: Requests are being rejected by concurrency protection
+          description: The instance or an upstream reached its configured concurrency boundary.
+
+      - alert: LoadBalancerRetryBudgetExhausted
+        expr: sum(rate(load_balancer_protection_events_total{kind="retry_budget_exhausted"}[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: Retry budget is being exhausted
+          description: Retries are intentionally suppressed to avoid request amplification.
