@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "npm run dev:live",
-    "dev:live": "vite --mode live --host 0.0.0.0",
-    "dev:demo": "vite --mode demo --host 0.0.0.0",
+    "dev:live": "vite --configLoader runner --mode live --host 0.0.0.0",
+    "dev:demo": "vite --configLoader runner --mode demo --host 0.0.0.0",
     "build": "npm run build:live",
-    "build:live": "tsc && vite build --mode live",
-    "build:demo": "tsc && vite build --mode demo",
-    "preview": "vite preview"
+    "build:live": "tsc && vite build --configLoader runner --mode live",
+    "build:demo": "tsc && vite build --configLoader runner --mode demo",
+    "preview": "npm run preview:live",
+    "preview:live": "vite preview --configLoader runner --mode live",
+    "preview:demo": "vite preview --configLoader runner --mode demo"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

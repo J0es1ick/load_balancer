@@ -1,80 +1,61 @@
-# Balancer Lab SPA
+# Interactive documentation SPA
 
-Один интерфейс работает в двух режимах, которые выбираются Vite environment-файлом.
+Один TypeScript/Vite интерфейс собирается в двух режимах.
 
-## `demo` — интерактивная документация
+## Demo — GitHub Pages
 
-Автономный браузерный режим: воспроизводит round-robin, token bucket, ответы `429`/`503`, health-анимацию, отключение backend'ов и метрики без Go API, PostgreSQL и Docker. Он предназначен для GitHub Pages.
+`demo` не обращается к API. Round-robin, token bucket, backend state, runtime-настройки, retry budget и ответы `429`/`503` воспроизводятся локально в браузере. Это не мониторинг запущенного сервера, а автономная интерактивная документация.
 
 ```bash
-cd frontend
 npm ci
 npm run dev:demo
-```
-
-Production-сборка:
-
-```bash
 npm run build:demo
-npm run preview
+npm run preview:demo
 ```
 
-Параметры лежат в `.env.demo`. Значение `VITE_BASE_PATH=/cloud_test_assignment/` соответствует текущему имени репозитория. При переименовании репозитория workflow сам подставит актуальный путь.
+При push в `master` workflow собирает этот режим с `VITE_BASE_PATH=/${repository-name}/` и публикует `dist` через GitHub Pages. В репозитории один раз выберите **Settings → Pages → Source → GitHub Actions**.
 
-## `live` — интеграция с Go-балансировщиком
+## Live — локальная интеграция
 
-Запросы проходят через реальный rate limit middleware, round-robin и reverse proxy. Состояние backend'ов и token bucket читается из Go API.
+`live` читает защищённый `/api/dashboard/status`, динамически строит список backend-ов, отправляет тестовые запросы через настоящий limiter/proxy и показывает circuit/inflight/slow-start state. При разрешённых runtime mutations он также включает, исключает и drain'ит backend-ы и применяет настройки.
 
-Весь проект запускается из корня репозитория:
+Рекомендуемый запуск всего проекта:
 
 ```bash
+./scripts/init-local.sh
 docker compose up --build
 ```
 
-Dashboard будет доступен на `http://localhost:3000`, балансировщик — на `http://localhost:8080`.
+Откройте `http://127.0.0.1:3000`. Nginx внутри frontend-контейнера проксирует `/api/` на management listener и добавляет bearer token сервер-сервер; credential не попадает в JavaScript.
 
-Для отдельной разработки фронта сначала запустите Go-часть, затем:
+Адрес data plane, который интерфейс показывает и копирует в live-режиме, задаётся build-переменной `VITE_PUBLIC_URL`. Корневой Compose передаёт её автоматически из `.env`, созданного `scripts/init-local.*`.
+
+Для отдельного Vite dev-server:
 
 ```bash
-cd frontend
-npm ci
+# frontend/.env.live.local — файл игнорируется Git
+VITE_MANAGEMENT_TOKEN=то-же-значение-что-BALANCER_ADMIN_TOKEN
+
 npm run dev:live
 ```
 
-Vite проксирует `/api` на адрес из `VITE_API_PROXY_TARGET` в `.env.live`. Production-сборка live-режима:
+Vite отправляет `/api` на `VITE_API_PROXY_TARGET`, по умолчанию `http://127.0.0.1:9090`.
 
-```bash
-npm run build:live
-```
+## Environment
 
-Команды `npm run dev` и `npm run build` оставлены алиасами для `live`, поэтому прежний локальный сценарий не меняется.
-
-## Переменные окружения
-
-| Переменная | Назначение |
+| Переменная | Использование |
 | --- | --- |
-| `VITE_APP_MODE=demo\|live` | Выбирает автономную модель или настоящий API |
-| `VITE_BASE_PATH` | Базовый URL Vite; `/` локально, `/<repo>/` на GitHub Pages |
-| `VITE_API_PROXY_TARGET` | Адрес Go API для dev-прокси live-режима |
+| `VITE_APP_MODE=demo\|live` | Выбор автономной модели или Go API |
+| `VITE_BASE_PATH` | `/` локально, `/<repo>/` на project Pages |
+| `VITE_API_PROXY_TARGET` | Только dev proxy в live mode |
+| `VITE_MANAGEMENT_TOKEN` | Только локальный dev proxy; запрещено задавать в Pages build |
 
-## GitHub Pages
+`npm run dev` и `npm run build` остаются алиасами live-режима.
 
-Workflow `.github/workflows/workflow.yml` при push в `master`:
+## Что меняет Runtime form
 
-1. устанавливает зависимости из `frontend/package-lock.json`;
-2. запускает `npm run build:demo`;
-3. подставляет `/${{ github.event.repository.name }}/` как base path;
-4. публикует `frontend/dist` через GitHub Pages.
+В live mode `PATCH /api/dashboard/config` обновляет capacity/refill/failure mode, health interval/timeout/thresholds/slow start и retry attempts/timeout/budget. Изменения находятся в памяти процесса до рестарта либо следующего `SIGHUP`. Форма не меняет YAML и не управляет secrets, listeners, global overload semaphore или storage connections.
 
-В репозитории один раз выберите **Settings → Pages → Source → GitHub Actions**. После успешного workflow сайт будет доступен по адресу `https://<owner>.github.io/<repository>/`.
+В Kubernetes-шаблоне frontend развёртывается как внутренний ClusterIP без public Ingress, а `management.runtime_mutations` выключен. UI автоматически блокирует изменяющие controls и показывает ID закреплённой реплики. Persistent production-настройки выполняются через versioned ConfigMap и rolling deployment; панель остаётся диагностическим интерфейсом.
 
-## Что можно проверить в live-режиме
-
-- фактическое распределение запросов между `backend1` и `backend2`;
-- реальное исключение ноды из backend pool;
-- настоящий ответ `429` при исчерпании PostgreSQL-backed token bucket;
-- настоящий ответ `503`, когда из ротации исключены все backend'ы;
-- восстановление токенов с частотой из `config/config.yaml`;
-- TCP health-state, burst и непрерывный автотрафик.
-
-Dashboard использует служебный API `/api/dashboard/*`. Выбор профиля bucket сбрасывает реальную запись текущего клиента до 8, 12 или 100 токенов. Переключатель backend'а меняет его участие в round-robin, не останавливая Docker-контейнер.
+В demo mode поля меняют только браузерную модель. Поэтому опубликованный сайт остаётся полностью статическим и безопасным.

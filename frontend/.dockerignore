@@ -1,4 +1,5 @@
 node_modules
 dist
-*.log
-
+*.local
+.env*
+README.md

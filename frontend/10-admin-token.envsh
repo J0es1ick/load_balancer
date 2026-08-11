@@ -1,0 +1,6 @@
+#!/bin/sh
+
+if [ -n "${BALANCER_ADMIN_TOKEN_FILE:-}" ]; then
+    BALANCER_ADMIN_TOKEN="$(cat "${BALANCER_ADMIN_TOKEN_FILE}")"
+    export BALANCER_ADMIN_TOKEN
+fi
