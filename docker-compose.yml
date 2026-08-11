@@ -2,80 +2,97 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-http://localhost:8080/}
+    environment:
+      BALANCER_ADMIN_TOKEN: ${BALANCER_ADMIN_TOKEN:?copy .env.example to .env and set a token}
     ports:
-      - "3000:80"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:8080"
     depends_on:
-      - balancer
+      balancer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0750
+      - /var/cache/nginx:uid=101,gid=101,mode=0750
+      - /var/run:uid=101,gid=101,mode=0750
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
     networks:
       app:
         ipv4_address: 172.30.0.10
 
   balancer:
     build: .
-    ports:
-      - "8080:8080"
-    depends_on:
-      backend1:
-        condition: service_healthy
-      backend2:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
     environment:
-      - CONFIG_PATH=/config/config.yaml
+      CONFIG_PATH: /config/config.yaml
+      BALANCER_ADMIN_TOKEN: ${BALANCER_ADMIN_TOKEN:?copy .env.example to .env and set a token}
+    ports:
+      - "127.0.0.1:${BALANCER_PUBLIC_PORT:-8080}:8080"
     volumes:
       - ./config:/config:ro
-    networks:
-      - app
-
-  postgres:
-    image: postgres:latest
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 12345
-      POSTGRES_DB: balancer
-    ports:
-      - "5000:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d balancer"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/readyz || exit 1"]
       interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - app
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: ["app"]
+
+  redis:
+    image: redis:8.8.1-alpine3.23
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: ["app"]
 
   backend1:
-    image: nginx
-    ports:
-      - "8081:80"
+    image: nginx:1.28.3-alpine3.23
     volumes:
-      - ./test/backend1:/usr/share/nginx/html
+      - ./test/backend1:/usr/share/nginx/html:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
       interval: 5s
-      timeout: 5s
+      timeout: 2s
       retries: 10
-    networks:
-      - app
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: ["app"]
 
   backend2:
-    image: nginx
-    ports:
-      - "8082:80"
+    image: nginx:1.28.3-alpine3.23
     volumes:
-      - ./test/backend2:/usr/share/nginx/html
+      - ./test/backend2:/usr/share/nginx/html:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
       interval: 5s
-      timeout: 5s
+      timeout: 2s
       retries: 10
-    networks:
-      - app
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: ["app"]
 
 volumes:
-  postgres_data:
+  redis_data:
 
 networks:
   app:

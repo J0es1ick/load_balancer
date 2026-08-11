@@ -1,0 +1,10 @@
+.env
+.idea/
+.vscode/
+.DS_Store
+coverage.out
+*.prof
+.cache/
+frontend/node_modules/
+frontend/dist/
+deploy/secrets/
