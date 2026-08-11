@@ -25,6 +25,30 @@ func TestBackendPoolUsesExplicitStableIDs(t *testing.T) {
 	assert.False(t, pool.Ready())
 }
 
+func TestBackendPoolSupportsDisabledReserveAndActiveCount(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{
+		{ID: "one", URL: "http://one:80"},
+		{ID: "two", URL: "http://two:80"},
+		{ID: "three", URL: "http://three:80", Disabled: true},
+	})
+	require.NoError(t, err)
+	for _, backend := range pool.GetBackends() {
+		backend.SetAlive(true)
+	}
+	require.Len(t, pool.AvailableBackends(), 2)
+	assert.False(t, pool.GetBackends()[2].IsEnabled())
+
+	assert.True(t, pool.SetActiveCount(3))
+	require.Len(t, pool.AvailableBackends(), 3)
+	assert.True(t, pool.GetBackends()[2].IsEnabled())
+
+	assert.True(t, pool.SetActiveCount(1))
+	require.Len(t, pool.AvailableBackends(), 1)
+	assert.Equal(t, "one", pool.AvailableBackends()[0].ID())
+	assert.False(t, pool.SetActiveCount(0))
+	assert.False(t, pool.SetActiveCount(4))
+}
+
 func TestBackendPoolPublishesConcurrentHealthChangesConsistently(t *testing.T) {
 	specs := make([]balancer.BackendSpec, 64)
 	for index := range specs {
@@ -79,6 +103,33 @@ func TestPassiveCooldownCannotBeBypassedByActiveHealth(t *testing.T) {
 	time.Sleep(40 * time.Millisecond)
 	backend.RecordHealthResult(true, 1, 1)
 	assert.True(t, backend.IsAlive())
+}
+
+func TestConcurrentPassiveFailureCannotBeClearedByActiveHealth(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}, balancer.PassivePolicy{FailureThreshold: 1, Cooldown: time.Minute, MaxConcurrentRequests: 8, SlowStartMinimum: 100})
+	require.NoError(t, err)
+	backend := pool.GetBackends()[0]
+
+	for range 1_000 {
+		backend.SetAlive(true)
+		start := make(chan struct{})
+		var waitGroup sync.WaitGroup
+		waitGroup.Add(2)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			backend.RecordHealthResult(true, 1, 1)
+		}()
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			backend.RecordPassiveFailure(pool.PassivePolicy())
+		}()
+		close(start)
+		waitGroup.Wait()
+		require.True(t, backend.IsEjected(), "a concurrent active check must not clear passive ejection")
+		require.False(t, backend.IsAlive())
+	}
 }
 
 func TestBackendDrainStopsNewTrafficAndPreservesState(t *testing.T) {

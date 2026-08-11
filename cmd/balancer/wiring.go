@@ -70,7 +70,7 @@ func upstreamTransport(cfg config.UpstreamConfig) *http.Transport {
 func backendSpecs(backends []config.BackendConfig) []balancer.BackendSpec {
 	result := make([]balancer.BackendSpec, 0, len(backends))
 	for _, backend := range backends {
-		result = append(result, balancer.BackendSpec{ID: backend.ID, URL: backend.URL})
+		result = append(result, balancer.BackendSpec{ID: backend.ID, URL: backend.URL, Disabled: backend.Disabled})
 	}
 	return result
 }

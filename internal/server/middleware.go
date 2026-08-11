@@ -10,14 +10,18 @@ import (
 	"io"
 	"log/slog"
 	mathrand "math/rand/v2"
+	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type contextKey string
 
 const requestIDKey contextKey = "request-id"
+
+const managementCSRFHeader = "X-Balancer-CSRF"
 
 func (server *Server) managementAuth(token string, insecure bool, next http.Handler) http.Handler {
 	if insecure {
@@ -29,6 +33,29 @@ func (server *Server) managementAuth(token string, insecure bool, next http.Hand
 		if len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
 			writer.Header().Set("WWW-Authenticate", `Bearer realm="load-balancer-management"`)
 			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func (server *Server) managementMutationGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/api/dashboard/") || request.Method == http.MethodGet || request.Method == http.MethodHead {
+			next.ServeHTTP(writer, request)
+			return
+		}
+		if strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site") {
+			writeJSON(writer, http.StatusForbidden, map[string]string{"error": "cross-site management mutations are forbidden"})
+			return
+		}
+		if request.Header.Get(managementCSRFHeader) != "1" {
+			writeJSON(writer, http.StatusForbidden, map[string]string{"error": "management mutation requires X-Balancer-CSRF: 1"})
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeJSON(writer, http.StatusUnsupportedMediaType, map[string]string{"error": "management mutation requires Content-Type: application/json"})
 			return
 		}
 		next.ServeHTTP(writer, request)

@@ -583,8 +583,9 @@ kbd,
 }
 
 .network-stage {
+  --backend-count: 2;
   position: relative;
-  min-height: 472px;
+  min-height: max(472px, calc(132px + var(--backend-count) * 112px));
   overflow: hidden;
   background-color: #121410;
   background-image: radial-gradient(circle, rgba(213, 255, 64, 0.11) 0.8px, transparent 0.9px);
@@ -705,13 +706,14 @@ kbd,
 }
 
 .client-node {
-  top: 185px;
+  top: 50%;
   left: 3.4%;
   width: 150px;
   min-height: 108px;
   padding: 18px 16px 14px;
   border: 1px solid rgba(192, 194, 184, 0.14);
   border-radius: 7px;
+  transform: translateY(-50%);
 }
 
 .client-icon {
@@ -753,7 +755,7 @@ kbd,
 }
 
 .balancer-node {
-  top: 129px;
+  top: 50%;
   left: 34.2%;
   width: 226px;
   min-height: 220px;
@@ -761,6 +763,7 @@ kbd,
   border: 1px solid rgba(213, 255, 64, 0.34);
   border-radius: 9px;
   background: #1e2119;
+  transform: translateY(-50%);
 }
 
 .balancer-node::before {
@@ -877,13 +880,12 @@ kbd,
   right: 3.7%;
   bottom: 72px;
   z-index: 3;
-  width: 210px;
+  width: 224px;
+  padding: 4px 7px 6px;
   display: grid;
   align-content: space-between;
   gap: 12px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(213, 255, 64, 0.35) transparent;
+  overflow: visible;
 }
 
 .backend-nodes .backend-node {
@@ -895,7 +897,7 @@ kbd,
 
 .backend-node:hover {
   border-color: rgba(213, 255, 64, 0.4);
-  transform: translateX(-3px);
+  transform: translateX(-2px);
 }
 
 .backend-node:disabled,
@@ -994,7 +996,8 @@ kbd,
 
 .database-node {
   position: absolute;
-  bottom: 24px;
+  top: 82%;
+  bottom: auto;
   left: 35.5%;
   z-index: 3;
   min-width: 200px;
@@ -1288,6 +1291,10 @@ kbd,
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.backend-count-control {
+  margin-left: 0;
 }
 
 .profile-control label {
@@ -2013,7 +2020,7 @@ footer a span {
   }
 
   .network-stage {
-    min-height: 500px;
+    min-height: max(500px, calc(132px + var(--backend-count) * 112px));
   }
 
   .activity-panel {
@@ -2243,11 +2250,13 @@ footer a span {
     position: relative;
     inset: auto;
     width: auto;
+    transform: none;
   }
 
   .backend-nodes {
     position: static;
     width: auto;
+    padding: 0;
     display: grid;
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2432,6 +2441,21 @@ footer a span {
 
   footer p {
     display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .backend-nodes {
+    grid-template-columns: 1fr;
+  }
+
+  .backend-node {
+    min-height: 104px;
+    grid-template-columns: 34px minmax(0, 1fr) 24px;
+  }
+
+  .power-icon {
+    position: static;
   }
 }
 

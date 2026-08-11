@@ -86,8 +86,9 @@ type RedisConfig struct {
 }
 
 type BackendConfig struct {
-	ID  string `yaml:"id"`
-	URL string `yaml:"url"`
+	ID       string `yaml:"id"`
+	URL      string `yaml:"url"`
+	Disabled bool   `yaml:"disabled"`
 }
 
 type RateLimitConfig struct {

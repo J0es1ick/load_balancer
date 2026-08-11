@@ -9,8 +9,9 @@ import (
 )
 
 type BackendSpec struct {
-	ID  string
-	URL string
+	ID       string
+	URL      string
+	Disabled bool
 }
 
 type backendList []*Backend
@@ -24,6 +25,7 @@ type PassivePolicy struct {
 }
 
 type Backend struct {
+	stateMu            sync.Mutex
 	id                 string
 	URL                *url.URL
 	healthy            atomic.Bool
@@ -42,6 +44,13 @@ type Backend struct {
 func (b *Backend) ID() string { return b.id }
 
 func (b *Backend) SetAlive(alive bool) {
+	b.stateMu.Lock()
+	changed := b.setAliveLocked(alive)
+	b.stateMu.Unlock()
+	b.refreshAvailability(changed)
+}
+
+func (b *Backend) setAliveLocked(alive bool) bool {
 	changed := b.healthy.Swap(alive) != alive
 	if alive {
 		b.passiveFailures.Store(0)
@@ -52,41 +61,61 @@ func (b *Backend) SetAlive(alive bool) {
 	} else if changed {
 		b.healthySince.Store(0)
 	}
-	if changed && b.pool != nil {
-		b.pool.refreshAvailable()
-	}
+	return changed
 }
 
 func (b *Backend) RecordHealthResult(success bool, successThreshold, failureThreshold int) {
+	b.stateMu.Lock()
+	changed := b.recordHealthResultLocked(success, successThreshold, failureThreshold)
+	b.stateMu.Unlock()
+	b.refreshAvailability(changed)
+}
+
+func (b *Backend) recordHealthResultLocked(success bool, successThreshold, failureThreshold int) bool {
 	if success {
 		b.consecutiveFailure.Store(0)
-		if b.IsEjected() {
+		if until := b.ejectedUntil.Load(); until > time.Now().UnixNano() {
 			b.consecutiveSuccess.Store(0)
-			return
+			return false
 		}
 		if b.consecutiveSuccess.Add(1) >= int64(successThreshold) {
-			b.SetAlive(true)
+			return b.setAliveLocked(true)
 		}
-		return
+		return false
 	}
 	b.consecutiveSuccess.Store(0)
 	if b.consecutiveFailure.Add(1) >= int64(failureThreshold) {
-		b.SetAlive(false)
+		return b.setAliveLocked(false)
 	}
+	return false
 }
 
 func (b *Backend) RecordPassiveFailure(policy PassivePolicy) {
 	if policy.FailureThreshold < 1 {
 		return
 	}
+	b.stateMu.Lock()
 	if b.passiveFailures.Add(1) < policy.FailureThreshold {
+		b.stateMu.Unlock()
 		return
 	}
 	b.ejectedUntil.Store(time.Now().Add(policy.Cooldown).UnixNano())
-	b.SetAlive(false)
+	changed := b.setAliveLocked(false)
+	b.stateMu.Unlock()
+	b.refreshAvailability(changed)
 }
 
-func (b *Backend) RecordPassiveSuccess() { b.passiveFailures.Store(0) }
+func (b *Backend) RecordPassiveSuccess() {
+	b.stateMu.Lock()
+	b.passiveFailures.Store(0)
+	b.stateMu.Unlock()
+}
+
+func (b *Backend) refreshAvailability(changed bool) {
+	if changed && b.pool != nil {
+		b.pool.refreshAvailable()
+	}
+}
 
 func (b *Backend) IsAlive() bool {
 	return b.healthy.Load() && b.enabled.Load() && !b.draining.Load() && !b.IsEjected()
@@ -100,23 +129,25 @@ func (b *Backend) IsEjected() bool {
 }
 
 func (b *Backend) SetEnabled(enabled bool) {
+	b.stateMu.Lock()
 	if enabled {
 		b.draining.Store(false)
 	}
 	changed := b.enabled.Swap(enabled) != enabled
-	if changed && b.pool != nil {
-		b.pool.refreshAvailable()
-	}
+	b.stateMu.Unlock()
+	b.refreshAvailability(changed)
 }
 
 func (b *Backend) IsEnabled() bool { return b.enabled.Load() }
 func (b *Backend) RecordRequest()  { b.requests.Add(1) }
 
 func (b *Backend) SetDraining(draining bool) {
+	b.stateMu.Lock()
 	b.draining.Store(draining)
 	if draining {
 		b.enabled.Store(false)
 	}
+	b.stateMu.Unlock()
 	if b.pool != nil {
 		b.pool.refreshAvailable()
 	}
@@ -251,7 +282,7 @@ func (p *BackendPool) buildBackends(specs []BackendSpec) (backendList, error) {
 		ids[spec.ID] = struct{}{}
 		urls[backendURL.String()] = struct{}{}
 		backend := &Backend{id: spec.ID, URL: backendURL, pool: p}
-		backend.enabled.Store(true)
+		backend.enabled.Store(!spec.Disabled)
 		backends = append(backends, backend)
 	}
 	return backends, nil
@@ -343,6 +374,17 @@ func (p *BackendPool) SetBackendEnabled(id string, enabled bool) bool {
 		}
 	}
 	return false
+}
+
+func (p *BackendPool) SetActiveCount(count int) bool {
+	backends := p.GetBackends()
+	if count < 1 || count > len(backends) {
+		return false
+	}
+	for index, backend := range backends {
+		backend.SetEnabled(index < count)
+	}
+	return true
 }
 
 func (p *BackendPool) DrainBackend(id string) bool {

@@ -92,6 +92,25 @@ func (server *Server) handleDashboardRequest(writer http.ResponseWriter, request
 	server.balancer.ServeHTTP(writer, proxyRequest)
 }
 
+func (server *Server) handleBackendCount(writer http.ResponseWriter, request *http.Request) {
+	if !server.requireRuntimeMutations(writer) {
+		return
+	}
+	var payload struct {
+		Count int `json:"count"`
+	}
+	if err := decodeJSON(writer, request, &payload); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !server.balancer.SetActiveBackendCount(payload.Count) {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "count must be between 1 and the configured backend count"})
+		return
+	}
+	slog.InfoContext(request.Context(), "active backend count changed", "count", payload.Count, "client_ip", server.clientIP(request), "request_id", RequestID(request.Context()))
+	writeJSON(writer, http.StatusOK, map[string]int{"count": payload.Count})
+}
+
 func (server *Server) handleBackendState(writer http.ResponseWriter, request *http.Request) {
 	if !server.requireRuntimeMutations(writer) {
 		return

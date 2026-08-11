@@ -31,6 +31,7 @@ backends:
     url: "http://backend:8081"
   - id: "backend-2"
     url: "http://backend:8082"
+    disabled: true
 rate_limit:
   enabled: true
   storage: "local"
@@ -50,6 +51,7 @@ func TestLoadAppliesDefaultsAndAcceptsSameHostOnDifferentPorts(t *testing.T) {
 	assert.Equal(t, 1<<20, cfg.Server.MaxHeaderBytes)
 	assert.Equal(t, 2, cfg.Server.Retry.MaxAttempts)
 	assert.Equal(t, 64, cfg.RateLimit.LocalShards)
+	assert.True(t, cfg.Backends[1].Disabled)
 }
 
 func TestLoadRejectsDuplicateIDsUnknownFieldsAndUnsafeManagement(t *testing.T) {

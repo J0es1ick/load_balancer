@@ -141,6 +141,7 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 		managementMux.Handle("GET /metrics", options.Metrics)
 		managementMux.HandleFunc("GET /api/dashboard/status", server.handleStatus)
 		managementMux.Handle("GET /api/dashboard/request", server.overload.middleware(server.withVerifiedClientIP(ratelimit.RateLimitMiddleware(limiter, server.clientIP)(http.HandlerFunc(server.handleDashboardRequest)))))
+		managementMux.HandleFunc("POST /api/dashboard/backends", server.handleBackendCount)
 		managementMux.HandleFunc("POST /api/dashboard/backends/{id}", server.handleBackendState)
 		managementMux.HandleFunc("POST /api/dashboard/backends/{id}/drain", server.handleBackendDrain)
 		managementMux.HandleFunc("POST /api/dashboard/limit", server.handleLimitReset)
@@ -148,7 +149,7 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 		if options.EnablePprof {
 			registerPprof(managementMux)
 		}
-		managementHandler := server.managementAuth(options.ManagementAuthToken, options.ManagementInsecure, managementMux)
+		managementHandler := server.managementAuth(options.ManagementAuthToken, options.ManagementInsecure, server.managementMutationGuard(managementMux))
 		server.managementServer = newHTTPServer(options.ManagementAddress, server.instrument("management", managementHandler), options, options.ManagementWriteTimeout)
 	}
 	return server, nil

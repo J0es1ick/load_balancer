@@ -80,6 +80,11 @@ func TestManagementPlaneIsAuthenticatedAndUsesRealComponents(t *testing.T) {
 	assert.Equal(t, http.StatusOK, disableRecorder.Code)
 	assert.False(t, pool.GetBackends()[0].IsEnabled())
 
+	countRecorder := httptest.NewRecorder()
+	httpServer.ManagementHandler().ServeHTTP(countRecorder, dashboardRequest(http.MethodPost, "/api/dashboard/backends", `{"count":1}`, true))
+	assert.Equal(t, http.StatusOK, countRecorder.Code)
+	assert.True(t, pool.GetBackends()[0].IsEnabled())
+
 	drainRecorder := httptest.NewRecorder()
 	httpServer.ManagementHandler().ServeHTTP(drainRecorder, dashboardRequest(http.MethodPost, "/api/dashboard/backends/api/drain", "", true))
 	assert.Equal(t, http.StatusAccepted, drainRecorder.Code)
@@ -165,7 +170,7 @@ func TestRuntimeMutationsCanBeDisabledForMultiReplicaDeployments(t *testing.T) {
 	httpServer, err := server.NewServer(options, balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy()), limiter)
 	require.NoError(t, err)
 
-	for _, path := range []string{"/api/dashboard/backends/api", "/api/dashboard/backends/api/drain", "/api/dashboard/limit"} {
+	for _, path := range []string{"/api/dashboard/backends", "/api/dashboard/backends/api", "/api/dashboard/backends/api/drain", "/api/dashboard/limit"} {
 		recorder := httptest.NewRecorder()
 		httpServer.ManagementHandler().ServeHTTP(recorder, dashboardRequest(http.MethodPost, path, `{}`, true))
 		assert.Equal(t, http.StatusForbidden, recorder.Code, path)
@@ -173,6 +178,37 @@ func TestRuntimeMutationsCanBeDisabledForMultiReplicaDeployments(t *testing.T) {
 	configRecorder := httptest.NewRecorder()
 	httpServer.ManagementHandler().ServeHTTP(configRecorder, dashboardRequest(http.MethodPatch, "/api/dashboard/config", `{}`, true))
 	assert.Equal(t, http.StatusForbidden, configRecorder.Code)
+	assert.True(t, pool.GetBackends()[0].IsEnabled())
+}
+
+func TestManagementMutationsRejectCrossSiteAndSimpleRequests(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://127.0.0.1:1"}})
+	require.NoError(t, err)
+	pool.GetBackends()[0].SetAlive(true)
+	limiter, err := ratelimit.NewTokenBucketLimiter(ratelimit.RuntimeSettings{Enabled: false, Policy: ratelimit.Policy{Capacity: 10, RefillPerSecond: 1}, FailureMode: "fail-open", OperationTimeout: time.Second}, ratelimit.NewLocalStore(1), nil)
+	require.NoError(t, err)
+	httpServer, err := server.NewServer(testOptions(observability.NewMetrics()), balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy()), limiter)
+	require.NoError(t, err)
+
+	missingHeader := dashboardRequest(http.MethodPost, "/api/dashboard/backends/api", `{"enabled":false}`, true)
+	missingHeader.Header.Del("X-Balancer-CSRF")
+	missingHeaderRecorder := httptest.NewRecorder()
+	httpServer.ManagementHandler().ServeHTTP(missingHeaderRecorder, missingHeader)
+	assert.Equal(t, http.StatusForbidden, missingHeaderRecorder.Code)
+	assert.True(t, pool.GetBackends()[0].IsEnabled())
+
+	crossSite := dashboardRequest(http.MethodPost, "/api/dashboard/backends/api", `{"enabled":false}`, true)
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossSiteRecorder := httptest.NewRecorder()
+	httpServer.ManagementHandler().ServeHTTP(crossSiteRecorder, crossSite)
+	assert.Equal(t, http.StatusForbidden, crossSiteRecorder.Code)
+	assert.True(t, pool.GetBackends()[0].IsEnabled())
+
+	wrongContentType := dashboardRequest(http.MethodPost, "/api/dashboard/backends/api", `{"enabled":false}`, true)
+	wrongContentType.Header.Set("Content-Type", "text/plain")
+	wrongContentTypeRecorder := httptest.NewRecorder()
+	httpServer.ManagementHandler().ServeHTTP(wrongContentTypeRecorder, wrongContentType)
+	assert.Equal(t, http.StatusUnsupportedMediaType, wrongContentTypeRecorder.Code)
 	assert.True(t, pool.GetBackends()[0].IsEnabled())
 }
 
@@ -297,6 +333,10 @@ func testOptions(metrics *observability.Metrics) server.Options {
 func dashboardRequest(method, path, body string, authenticated bool) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.RemoteAddr = "192.0.2.10:41000"
+	if method != http.MethodGet && method != http.MethodHead {
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Balancer-CSRF", "1")
+	}
 	if authenticated {
 		request.Header.Set("Authorization", "Bearer test-token")
 	}

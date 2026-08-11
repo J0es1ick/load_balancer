@@ -143,4 +143,7 @@ func (lb *LoadBalancer) BackendPolicy() PassivePolicy         { return lb.pool.P
 func (lb *LoadBalancer) SetBackendEnabled(id string, enabled bool) bool {
 	return lb.pool.SetBackendEnabled(id, enabled)
 }
+func (lb *LoadBalancer) SetActiveBackendCount(count int) bool {
+	return lb.pool.SetActiveCount(count)
+}
 func (lb *LoadBalancer) DrainBackend(id string) bool { return lb.pool.DrainBackend(id) }

@@ -6,6 +6,12 @@ type AppMode = 'demo' | 'live'
 const appMode: AppMode = import.meta.env.VITE_APP_MODE === 'demo' ? 'demo' : 'live'
 const isDemoMode = appMode === 'demo'
 const publicBalancerURL = String(import.meta.env.VITE_PUBLIC_URL || 'http://localhost:8080/')
+const managementMutationHeaders = {
+  'Content-Type': 'application/json',
+  'X-Balancer-CSRF': '1',
+}
+const demoBackendLimit = 8
+const initialBackendCount = 2
 
 interface BackendNode {
   id: string
@@ -117,10 +123,25 @@ interface SimulationState {
   roundRobinCounter: number
 }
 
-let backends: BackendNode[] = [
-  { id: 'backend-1', number: '01', url: 'http://backend1:80', alive: isDemoMode, healthy: isDemoMode, enabled: true, handled: 0, inflight: 0, draining: false, slowStartPercent: 100, circuitState: 'closed' },
-  { id: 'backend-2', number: '02', url: 'http://backend2:80', alive: isDemoMode, healthy: isDemoMode, enabled: true, handled: 0, inflight: 0, draining: false, slowStartPercent: 100, circuitState: 'closed' },
-]
+function createDemoBackend(index: number): BackendNode {
+  const position = index + 1
+  return {
+    id: `backend-${position}`,
+    number: String(position).padStart(2, '0'),
+    url: `http://backend${position}:80`,
+    alive: true,
+    healthy: true,
+    enabled: true,
+    handled: 0,
+    inflight: 0,
+    draining: false,
+    slowStartPercent: 100,
+    circuitState: 'closed',
+  }
+}
+
+let selectedBackendCount = initialBackendCount
+let backends: BackendNode[] = Array.from({ length: initialBackendCount }, (_, index) => createDemoBackend(index))
 
 const state: SimulationState = {
   requestId: 0,
@@ -328,6 +349,13 @@ app.innerHTML = `
               </select>
             </div>
 
+            <div class="profile-control backend-count-control">
+              <label for="backend-count-select">Активных backend</label>
+              <select id="backend-count-select" aria-label="Количество активных backend-серверов">
+                ${Array.from({ length: demoBackendLimit }, (_, index) => `<option value="${index + 1}"${index + 1 === initialBackendCount ? ' selected' : ''}>${index + 1}</option>`).join('')}
+              </select>
+            </div>
+
             <button class="reset-button" id="reset-simulation" type="button" title="Сбросить состояние">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a7 7 0 1 0 .4 5M16 3v4h-4" /></svg>
               Сбросить
@@ -363,7 +391,7 @@ app.innerHTML = `
         <div class="architecture-intro">
           <p class="eyebrow"><span>02</span> Processing pipeline</p>
           <h2 id="architecture-title">Порядок обработки<br />запроса</h2>
-          <p>Публичный data plane не содержит административных обработчиков. Management API и метрики слушают отдельный адрес и требуют bearer token.</p>
+          <p>Публичный data plane не содержит административных обработчиков. Management API и метрики слушают отдельный адрес и требуют bearer token; изменяющие JSON-запросы дополнительно защищены заголовком <code>X-Balancer-CSRF</code>.</p>
         </div>
 
         <div class="flow-steps">
@@ -559,8 +587,16 @@ const elements = {
   eventList: query<HTMLElement>('#event-list'),
   activityEmpty: query<HTMLElement>('#activity-empty'),
   packetLayer: query<SVGGElement>('#packet-layer'),
+  routes: query<SVGSVGElement>('.routes'),
+  routeIngress: query<SVGPathElement>('.route-ingress'),
+  routeBlocked: query<SVGPathElement>('#route-blocked'),
+  databaseRoute: query<SVGPathElement>('.database-route'),
+  routeJunction: query<SVGGElement>('.route-junction'),
   backendRouteLayer: query<SVGGElement>('#backend-route-layer'),
+  networkStage: query<HTMLElement>('.network-stage'),
+  clientNode: query<HTMLElement>('.client-node'),
   backendNodes: query<HTMLElement>('#backend-nodes'),
+  databaseNode: query<HTMLElement>('.database-node'),
   drainActions: query<HTMLElement>('#drain-actions'),
   balancer: query<HTMLElement>('#balancer-node'),
   autoButton: query<HTMLButtonElement>('#auto-traffic'),
@@ -577,6 +613,7 @@ const elements = {
   configNote: query<HTMLElement>('#config-note'),
   clientIP: query<HTMLElement>('#client-ip'),
   capacitySelect: query<HTMLSelectElement>('#capacity-select'),
+  backendCountSelect: query<HTMLSelectElement>('#backend-count-select'),
   resetButton: query<HTMLButtonElement>('#reset-simulation'),
   storageLabel: query<HTMLElement>('#storage-label'),
   storageDetail: query<HTMLElement>('#storage-detail'),
@@ -619,6 +656,19 @@ let backendConnected = false
 let runtimeFormDirty = false
 let runtimeMutationsEnabled = isDemoMode
 let connectedInstanceID = isDemoMode ? 'browser' : 'unknown'
+
+function configureBackendCountOptions(maximum: number): void {
+  Array.from(elements.backendCountSelect.options).forEach((option) => {
+    option.disabled = Number(option.value) > maximum
+  })
+  elements.backendCountSelect.title = `Настроено backend-серверов: ${maximum}`
+}
+
+function syncBackendCountControl(): void {
+  const activeCount = backends.filter((backend) => backend.enabled).length
+  selectedBackendCount = Math.max(1, activeCount)
+  elements.backendCountSelect.value = String(selectedBackendCount)
+}
 
 function formatTime(): string {
   return new Intl.DateTimeFormat('ru-RU', {
@@ -703,7 +753,7 @@ function setConnectionState(connected: boolean): void {
     elements.runtimeLabel.textContent = 'Demo mode'
     elements.runtimeVersion.textContent = 'STATIC'
     elements.heroLead.textContent =
-      'Браузер воспроизводит решение token bucket, round-robin и доступность двух backend-серверов. Сетевые запросы к Go API в этом режиме не выполняются.'
+      'Браузер воспроизводит token bucket, round-robin и пул из 1–8 backend-серверов. Сетевые запросы к Go API в этом режиме не выполняются.'
     elements.heroNote.textContent = 'Demo: автономная интерактивная документация для GitHub Pages'
     elements.endpointAddress.textContent = 'demo://round-robin'
     elements.configNote.innerHTML =
@@ -716,6 +766,7 @@ function setConnectionState(connected: boolean): void {
     elements.burstButton.disabled = false
     elements.autoButton.disabled = false
     elements.capacitySelect.disabled = false
+    elements.backendCountSelect.disabled = false
     elements.resetButton.disabled = false
     elements.readyValue.textContent = 'DEMO'
     elements.runtimeStorage.textContent = 'browser memory'
@@ -751,6 +802,7 @@ function setConnectionState(connected: boolean): void {
   elements.burstButton.disabled = !connected
   elements.autoButton.disabled = !connected
   elements.capacitySelect.disabled = !connected || !runtimeMutationsEnabled
+  elements.backendCountSelect.disabled = !connected || !runtimeMutationsEnabled
   elements.resetButton.disabled = !connected || !runtimeMutationsEnabled
   elements.runtimeForm.querySelectorAll('input, select, button').forEach((control) => {
     ;(control as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = !connected || !runtimeMutationsEnabled
@@ -842,6 +894,8 @@ async function refreshStatus(announce = false): Promise<boolean> {
       slowStartPercent: snapshot.slow_start_percent,
       circuitState: snapshot.circuit_state,
     }))
+    configureBackendCountOptions(backends.length)
+    syncBackendCountControl()
 
     const wasConnected = backendConnected
     setConnectionState(true)
@@ -1019,9 +1073,12 @@ function renderBackends(): void {
 		drainButton.disabled = !backendConnected || (!isDemoMode && !runtimeMutationsEnabled)
 	}
   })
+  syncBackendCountControl()
+  queueRouteGeometryUpdate()
 }
 
 function ensureBackendStructure(): void {
+	elements.networkStage.style.setProperty('--backend-count', String(backends.length))
 	const expectedIDs = backends.map((backend) => backend.id).join('\u0000')
 	if (elements.backendNodes.dataset.backendIds === expectedIDs) return
 	elements.backendNodes.dataset.backendIds = expectedIDs
@@ -1057,14 +1114,97 @@ function ensureBackendStructure(): void {
 		drain.textContent = `Drain ${backend.id}`
 		elements.drainActions.append(drain)
 
-		const targetY = backends.length === 1 ? 193 : 60 + (index * 266) / (backends.length - 1)
 		const path = document.createElementNS(svgNamespace, 'path')
 		path.id = `route-backend-${index + 1}`
 		path.setAttribute('class', 'route-line')
-		path.setAttribute('d', `M150 193 C220 193 255 193 330 193 C480 193 500 ${targetY} 650 ${targetY}`)
 		elements.backendRouteLayer.append(path)
 	})
+	queueRouteGeometryUpdate()
 }
+
+let routeGeometryFrame = 0
+
+function queueRouteGeometryUpdate(): void {
+	window.cancelAnimationFrame(routeGeometryFrame)
+	routeGeometryFrame = window.requestAnimationFrame(updateRouteGeometry)
+}
+
+function updateRouteGeometry(): void {
+	const routesRect = elements.routes.getBoundingClientRect()
+	if (routesRect.width < 1 || routesRect.height < 1) return
+
+	// Match SVG user units to CSS pixels. Besides making the route coordinates
+	// predictable, this keeps the packet and junction circles perfectly round.
+	elements.routes.setAttribute('viewBox', `0 0 ${routesRect.width} ${routesRect.height}`)
+
+	const clientRect = elements.clientNode.getBoundingClientRect()
+	const balancerRect = elements.balancer.getBoundingClientRect()
+	const databaseRect = elements.databaseNode.getBoundingClientRect()
+	const localX = (screenX: number): number => screenX - routesRect.left
+	const localY = (screenY: number): number => screenY - routesRect.top
+	const middleY = (rect: DOMRect): number => localY(rect.top + rect.height / 2)
+	const point = (x: number, y: number): string => `${x.toFixed(2)} ${y.toFixed(2)}`
+
+	const clientExit = { x: localX(clientRect.right), y: middleY(clientRect) }
+	const balancerEntry = { x: localX(balancerRect.left), y: middleY(balancerRect) }
+	const balancerExit = { x: localX(balancerRect.right) + 10, y: middleY(balancerRect) }
+	const ingressSpan = Math.max(1, balancerEntry.x - clientExit.x)
+	const ingressPath = [
+		`M ${point(clientExit.x, clientExit.y)}`,
+		`C ${point(clientExit.x + ingressSpan * 0.46, clientExit.y)}`,
+		point(balancerEntry.x - ingressSpan * 0.46, balancerEntry.y),
+		point(balancerEntry.x, balancerEntry.y),
+	].join(' ')
+
+	elements.routeIngress.setAttribute('d', ingressPath)
+	elements.routeBlocked.setAttribute(
+		'd',
+		`${ingressPath} L ${point(balancerEntry.x + balancerRect.width * 0.42, balancerEntry.y)}`,
+	)
+
+	backends.forEach((_backend, index) => {
+		const path = elements.backendRouteLayer.querySelector<SVGPathElement>(`#route-backend-${index + 1}`)
+		const backendNode = elements.backendNodes.querySelector<HTMLElement>(`[data-backend="${index}"]`)
+		if (!path || !backendNode) return
+
+		const backendRect = backendNode.getBoundingClientRect()
+		const backendEntry = { x: localX(backendRect.left) + 1, y: middleY(backendRect) }
+		const branchSpan = Math.max(1, backendEntry.x - balancerExit.x)
+		path.setAttribute(
+			'd',
+			`${ingressPath} L ${point(balancerExit.x, balancerExit.y)} `
+			+ `C ${point(balancerExit.x + branchSpan * 0.38, balancerExit.y)} `
+			+ `${point(balancerExit.x + branchSpan * 0.56, backendEntry.y)} ${point(backendEntry.x, backendEntry.y)}`,
+		)
+	})
+
+	elements.routeJunction.querySelectorAll<SVGCircleElement>('circle').forEach((circle) => {
+		circle.setAttribute('cx', balancerExit.x.toFixed(2))
+		circle.setAttribute('cy', balancerExit.y.toFixed(2))
+	})
+
+	const databaseStart = {
+		x: localX(balancerRect.left + balancerRect.width / 2),
+		y: localY(balancerRect.bottom),
+	}
+	const databaseEnd = {
+		x: localX(databaseRect.left + databaseRect.width / 2),
+		y: localY(databaseRect.top),
+	}
+	const databaseSpan = Math.max(1, databaseEnd.y - databaseStart.y)
+	elements.databaseRoute.setAttribute(
+		'd',
+		`M ${point(databaseStart.x, databaseStart.y)} `
+		+ `C ${point(databaseStart.x, databaseStart.y + databaseSpan * 0.45)} `
+		+ `${point(databaseEnd.x, databaseEnd.y - databaseSpan * 0.45)} ${point(databaseEnd.x, databaseEnd.y)}`,
+	)
+}
+
+const routeResizeObserver = new ResizeObserver(queueRouteGeometryUpdate)
+routeResizeObserver.observe(elements.networkStage)
+routeResizeObserver.observe(elements.backendNodes)
+window.addEventListener('resize', queueRouteGeometryUpdate)
+void document.fonts.ready.then(queueRouteGeometryUpdate)
 
 function renderSparkline(): void {
   elements.sparkline.replaceChildren()
@@ -1100,6 +1240,54 @@ function toggleAutoTraffic(): void {
   } else {
     window.clearInterval(autoTrafficTimer)
     showToast('Автотрафик остановлен')
+  }
+}
+
+function resizeDemoBackendPool(count: number): void {
+  const previous = backends
+  backends = Array.from({ length: count }, (_, index) => previous[index] ?? createDemoBackend(index))
+  backends.forEach((backend) => {
+    backend.enabled = true
+    backend.alive = backend.healthy
+    backend.draining = false
+    backend.circuitState = backend.alive ? 'closed' : 'open'
+  })
+  selectedBackendCount = count
+  state.roundRobinCounter = 0
+}
+
+async function updateBackendCount(count: number): Promise<void> {
+  if (count < 1 || count > (isDemoMode ? demoBackendLimit : backends.length)) return
+
+  if (isDemoMode) {
+    resizeDemoBackendPool(count)
+    renderState()
+    addEvent('SYS', 'Размер demo-pool изменён', `${count} активных backend-серверов`)
+    showToast(`Активных backend: ${count}`)
+    return
+  }
+
+  if (!runtimeMutationsEnabled) return
+  elements.backendCountSelect.disabled = true
+  try {
+    const response = await fetch('/api/dashboard/backends', {
+      method: 'POST',
+      headers: managementMutationHeaders,
+      body: JSON.stringify({ count }),
+    })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      throw new Error(body?.error || `HTTP ${response.status}`)
+    }
+    selectedBackendCount = count
+    await refreshStatus()
+    addEvent('SYS', 'Активный pool изменён', `${count} из ${backends.length} backend-серверов`)
+    showToast(`Активных backend: ${count}`)
+  } catch {
+    showToast('Не удалось изменить количество backend-серверов', 'error')
+    await refreshStatus()
+  } finally {
+    elements.backendCountSelect.disabled = !backendConnected || !runtimeMutationsEnabled
   }
 }
 
@@ -1140,16 +1328,14 @@ async function resetSimulation(): Promise<void> {
     const requests = [
       fetch('/api/dashboard/limit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementMutationHeaders,
         body: JSON.stringify({ capacity: state.capacity }),
       }),
-      ...backends.map((backend) =>
-        fetch(`/api/dashboard/backends/${encodeURIComponent(backend.id)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: true }),
-        }),
-      ),
+      fetch('/api/dashboard/backends', {
+        method: 'POST',
+        headers: managementMutationHeaders,
+        body: JSON.stringify({ count: selectedBackendCount }),
+      }),
     ]
     const responses = await Promise.all(requests)
     if (responses.some((response) => !response.ok)) throw new Error('Reset API failed')
@@ -1171,6 +1357,11 @@ query<HTMLButtonElement>('#burst-request').addEventListener('click', () => {
 elements.autoButton.addEventListener('click', toggleAutoTraffic)
 query<HTMLButtonElement>('#reset-simulation').addEventListener('click', () => void resetSimulation())
 
+elements.backendCountSelect.addEventListener('change', (event) => {
+  const select = event.currentTarget as HTMLSelectElement
+  void updateBackendCount(Number(select.value))
+})
+
 query<HTMLSelectElement>('#capacity-select').addEventListener('change', async (event) => {
   const select = event.currentTarget as HTMLSelectElement
   const capacity = Number(select.value)
@@ -1188,13 +1379,13 @@ query<HTMLSelectElement>('#capacity-select').addEventListener('change', async (e
   try {
     const configResponse = await fetch('/api/dashboard/config', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: managementMutationHeaders,
       body: JSON.stringify({ rate_limit: { capacity } }),
     })
     if (!configResponse.ok) throw new Error('Runtime config API failed')
     const response = await fetch('/api/dashboard/limit', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: managementMutationHeaders,
       body: JSON.stringify({ capacity }),
     })
     if (!response.ok) throw new Error('Limit API failed')
@@ -1258,7 +1449,7 @@ elements.runtimeForm.addEventListener('submit', async (event) => {
   try {
     const response = await fetch('/api/dashboard/config', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: managementMutationHeaders,
       body: JSON.stringify({
         rate_limit: { capacity, refill_per_second: refillPerSecond, failure_mode: failureMode },
         health_check: { interval: healthInterval, timeout: healthTimeout, failure_threshold: failureThreshold, success_threshold: successThreshold, slow_start: slowStart, slow_start_minimum_percent: slowMinimum },
@@ -1310,7 +1501,11 @@ async function drainBackend(index: number, button: HTMLButtonElement): Promise<v
   if (!runtimeMutationsEnabled) return
   button.disabled = true
   try {
-    const response = await fetch(`/api/dashboard/backends/${encodeURIComponent(backend.id)}/drain`, { method: 'POST' })
+    const response = await fetch(`/api/dashboard/backends/${encodeURIComponent(backend.id)}/drain`, {
+      method: 'POST',
+      headers: managementMutationHeaders,
+      body: '{}',
+    })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     addEvent('SYS', `Backend ${backend.number}: draining`, 'новые запросы больше не назначаются')
     showToast(`Backend ${backend.number}: draining`)
@@ -1341,7 +1536,7 @@ async function toggleBackend(index: number, element: HTMLButtonElement): Promise
   try {
     const response = await fetch(`/api/dashboard/backends/${encodeURIComponent(backend.id)}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: managementMutationHeaders,
       body: JSON.stringify({ enabled }),
     })
     if (!response.ok) throw new Error('Backend state API failed')
