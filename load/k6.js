@@ -4,6 +4,10 @@ import { Counter, Rate } from "k6/metrics";
 
 const profile = __ENV.PROFILE || "smoke";
 const target = __ENV.TARGET_URL || "http://host.docker.internal:8080";
+const expectedBackendIDs = (__ENV.EXPECTED_BACKENDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 const successfulResponses = new Counter("successful_responses");
 const throttledResponses = new Counter("throttled_responses");
@@ -11,6 +15,18 @@ const overloadedResponses = new Counter("overloaded_responses");
 const unexpectedResponses = new Counter("unexpected_responses");
 const successRate = new Rate("successful_response_rate");
 const unexpectedRate = new Rate("unexpected_response_rate");
+const backendHitCounters = Object.fromEntries(
+  expectedBackendIDs.map((id) => [
+    id,
+    new Counter(`backend_hits_${id.replace(/[^a-zA-Z0-9_]/g, "_")}`),
+  ]),
+);
+const backendHitThresholds = Object.fromEntries(
+  expectedBackendIDs.map((id) => [
+    `backend_hits_${id.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+    ["count>0"],
+  ]),
+);
 
 const profiles = {
   smoke: {
@@ -91,6 +107,7 @@ export const options = {
   thresholds: {
     ...profileThresholds,
     ...(throughputProfile ? { http_reqs: [`rate>${minimumRPS}`] } : {}),
+    ...backendHitThresholds,
     unexpected_response_rate: ["rate<0.01"],
     http_req_duration: ["p(95)<500", "p(99)<1000"],
     checks: ["rate>0.99"],
@@ -112,6 +129,7 @@ export default function () {
   const success = status === 200;
   const throttled = status === 429;
   const overloaded = status === 503;
+  const backendID = response.headers["X-Balancer-Backend"];
   const expected = successProfile
     ? success
     : rateLimitProfile
@@ -124,11 +142,16 @@ export default function () {
   unexpectedResponses.add(expected ? 0 : 1);
   successRate.add(success);
   unexpectedRate.add(!expected);
+  expectedBackendIDs.forEach((id) => {
+    backendHitCounters[id].add(success && backendID === id ? 1 : 0);
+  });
 
   check(response, {
     "status matches the selected profile": () => expected,
     "successful response identifies its backend": (result) =>
       !success || Boolean(result.headers["X-Balancer-Backend"]),
+    "successful response uses the expected backend pool": () =>
+      !success || expectedBackendIDs.length === 0 || expectedBackendIDs.includes(backendID),
     "attempt count is valid when present": (result) => {
       const raw = result.headers["X-Balancer-Attempts"];
       return !raw || (Number(raw) >= 1 && Number(raw) <= 2);

@@ -4,8 +4,8 @@ server:
   trusted_proxies:
     - "127.0.0.1/32"
     - "::1/128"
-    - "172.30.0.10/32"
-    - "172.30.0.11/32"
+    - "172.30.0.250/32"
+    - "172.30.0.251/32"
   read_header_timeout: "5s"
   read_timeout: "30s"
   write_timeout: "0s"
@@ -66,6 +66,24 @@ backends:
     url: "http://backend1:80"
   - id: "backend-2"
     url: "http://backend2:80"
+  - id: "backend-3"
+    url: "http://backend3:80"
+    disabled: true
+  - id: "backend-4"
+    url: "http://backend4:80"
+    disabled: true
+  - id: "backend-5"
+    url: "http://backend5:80"
+    disabled: true
+  - id: "backend-6"
+    url: "http://backend6:80"
+    disabled: true
+  - id: "backend-7"
+    url: "http://backend7:80"
+    disabled: true
+  - id: "backend-8"
+    url: "http://backend8:80"
+    disabled: true
 
 rate_limit:
   enabled: true

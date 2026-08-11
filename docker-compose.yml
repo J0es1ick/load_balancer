@@ -1,3 +1,14 @@
+x-backend-service: &backend-service
+  image: nginx:1.28.3-alpine3.23
+  healthcheck:
+    test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
+    interval: 5s
+    timeout: 2s
+    retries: 10
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  networks: ["app"]
+
 services:
   frontend:
     build:
@@ -26,7 +37,7 @@ services:
     restart: unless-stopped
     networks:
       app:
-        ipv4_address: 172.30.0.10
+        ipv4_address: 172.30.0.250
 
   balancer:
     build: .
@@ -66,30 +77,44 @@ services:
     networks: ["app"]
 
   backend1:
-    image: nginx:1.28.3-alpine3.23
+    <<: *backend-service
     volumes:
       - ./test/backend1:/usr/share/nginx/html:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
-      interval: 5s
-      timeout: 2s
-      retries: 10
-    security_opt: ["no-new-privileges:true"]
-    restart: unless-stopped
-    networks: ["app"]
 
   backend2:
-    image: nginx:1.28.3-alpine3.23
+    <<: *backend-service
     volumes:
       - ./test/backend2:/usr/share/nginx/html:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
-      interval: 5s
-      timeout: 2s
-      retries: 10
-    security_opt: ["no-new-privileges:true"]
-    restart: unless-stopped
-    networks: ["app"]
+
+  backend3:
+    <<: *backend-service
+    volumes:
+      - ./test/backend3:/usr/share/nginx/html:ro
+
+  backend4:
+    <<: *backend-service
+    volumes:
+      - ./test/backend4:/usr/share/nginx/html:ro
+
+  backend5:
+    <<: *backend-service
+    volumes:
+      - ./test/backend5:/usr/share/nginx/html:ro
+
+  backend6:
+    <<: *backend-service
+    volumes:
+      - ./test/backend6:/usr/share/nginx/html:ro
+
+  backend7:
+    <<: *backend-service
+    volumes:
+      - ./test/backend7:/usr/share/nginx/html:ro
+
+  backend8:
+    <<: *backend-service
+    volumes:
+      - ./test/backend8:/usr/share/nginx/html:ro
 
 volumes:
   redis_data:
@@ -99,3 +124,4 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.0/25

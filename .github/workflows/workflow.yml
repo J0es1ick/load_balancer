@@ -152,14 +152,20 @@ jobs:
       - name: k6 throughput profile without throttling
         shell: bash
         run: |
-          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' --data '{"rate_limit":{"capacity":100000,"refill_per_second":100000}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
+          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"rate_limit":{"capacity":100000,"refill_per_second":100000}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
+          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"count":8}' http://127.0.0.1:3000/api/dashboard/backends >/dev/null
+          for attempt in {1..30}; do
+            if [ "$(curl --fail --silent http://127.0.0.1:3000/api/dashboard/status | jq '[.backends[] | select(.available)] | length')" = "8" ]; then break; fi
+            sleep 1
+          done
+          test "$(curl --fail --silent http://127.0.0.1:3000/api/dashboard/status | jq '[.backends[] | select(.available)] | length')" = "8"
           docker compose exec -T redis redis-cli FLUSHDB >/dev/null
-          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1 run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=throughput -e VUS=10 -e DURATION=15s /scripts/k6.js
+          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1 run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=throughput -e VUS=10 -e DURATION=15s -e EXPECTED_BACKENDS=backend-1,backend-2,backend-3,backend-4,backend-5,backend-6,backend-7,backend-8 /scripts/k6.js
 
       - name: k6 rate-limit profile proves 200 to 429 transition
         shell: bash
         run: |
-          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' --data '{"rate_limit":{"capacity":20,"refill_per_second":1}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
+          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"rate_limit":{"capacity":20,"refill_per_second":1}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
           docker compose exec -T redis redis-cli FLUSHDB >/dev/null
           docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1 run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=rate-limit -e VUS=5 -e DURATION=10s /scripts/k6.js
 
