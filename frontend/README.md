@@ -4,7 +4,7 @@
 
 ## Demo — GitHub Pages
 
-`demo` не обращается к API. Round-robin, token bucket, backend state, runtime-настройки, retry budget и ответы `429`/`503` воспроизводятся локально в браузере. Это не мониторинг запущенного сервера, а автономная интерактивная документация.
+`demo` не обращается к API. Round-robin, token bucket, выбираемый пул из 1–8 backend-ов, runtime-настройки, retry budget и ответы `429`/`503` воспроизводятся локально в браузере. Это не мониторинг запущенного сервера, а автономная интерактивная документация.
 
 ```bash
 npm ci
@@ -17,7 +17,7 @@ npm run preview:demo
 
 ## Live — локальная интеграция
 
-`live` читает защищённый `/api/dashboard/status`, динамически строит список backend-ов, отправляет тестовые запросы через настоящий limiter/proxy и показывает circuit/inflight/slow-start state. При разрешённых runtime mutations он также включает, исключает и drain'ит backend-ы и применяет настройки.
+`live` читает защищённый `/api/dashboard/status`, динамически строит список backend-ов, отправляет тестовые запросы через настоящий limiter/proxy и показывает circuit/inflight/slow-start state. Селектор «Активных backend» вызывает `POST /api/dashboard/backends` и включает первые N нод реального локального пула. Compose содержит 8 nginx upstream-ов, из которых по умолчанию включены первые два. При разрешённых runtime mutations интерфейс также включает, исключает и drain'ит отдельные backend-ы и применяет настройки.
 
 Рекомендуемый запуск всего проекта:
 
@@ -27,6 +27,8 @@ docker compose up --build
 ```
 
 Откройте `http://127.0.0.1:3000`. Nginx внутри frontend-контейнера проксирует `/api/` на management listener и добавляет bearer token сервер-сервер; credential не попадает в JavaScript.
+
+Изменяющие запросы SPA отправляют `Content-Type: application/json` и `X-Balancer-CSRF: 1`. Management API отклоняет cross-site и простые form-запросы, поэтому сторонний сайт не может воспользоваться токеном, который nginx добавляет автоматически.
 
 Адрес data plane, который интерфейс показывает и копирует в live-режиме, задаётся build-переменной `VITE_PUBLIC_URL`. Корневой Compose передаёт её автоматически из `.env`, созданного `scripts/init-local.*`.
 
