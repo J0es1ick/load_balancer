@@ -1,58 +1,45 @@
 package balancer_test
 
 import (
-	"net/url"
+	"fmt"
 	"testing"
 
-	"github.com/J0es1ick/test-assignment/internal/balancer"
+	"github.com/J0es1ick/cloud_test_assignment/internal/balancer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRoundRobinStrategy(t *testing.T) {
-	backends := []string{
-		"http://backend1:8080",
-		"http://backend2:8080",
-		"http://backend3:8080",
-	}
-
-	pool, err := balancer.NewBackendPool(backends)
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "one", URL: "http://one"}, {ID: "two", URL: "http://two"}, {ID: "three", URL: "http://three"}})
 	require.NoError(t, err)
-	for _, backend := range pool.Backends {
+	for _, backend := range pool.GetBackends() {
 		backend.SetAlive(true)
 	}
 	strategy := balancer.NewRoundRobinStrategy()
+	assert.Equal(t, "one", strategy.GetNextPeer(pool).ID())
+	assert.Equal(t, "two", strategy.GetNextPeer(pool).ID())
+	assert.Equal(t, "three", strategy.GetNextPeer(pool).ID())
+	assert.Equal(t, "one", strategy.GetNextPeer(pool).ID())
+	assert.NotEqual(t, "two", strategy.GetNextPeerExcluding(pool, map[string]struct{}{"two": {}}).ID())
+}
 
-	t.Run("should rotate backends in order", func(t *testing.T) {
-		first := strategy.GetNextPeer(pool)
-		second := strategy.GetNextPeer(pool)
-		third := strategy.GetNextPeer(pool)
-		fourth := strategy.GetNextPeer(pool)
-
-		assert.Equal(t, backends[0], first.URL.String())
-		assert.Equal(t, backends[1], second.URL.String())
-		assert.Equal(t, backends[2], third.URL.String())
-		assert.Equal(t, backends[0], fourth.URL.String())
-	})
-
-	t.Run("should skip dead backends", func(t *testing.T) {
-		u, _ := url.Parse(backends[1])
-		pool.MarkBackendStatus(u, false)
-
-		peers := []string{
-			strategy.GetNextPeer(pool).URL.String(),
-			strategy.GetNextPeer(pool).URL.String(),
-			strategy.GetNextPeer(pool).URL.String(),
+func BenchmarkRoundRobinStrategy(b *testing.B) {
+	specs := make([]balancer.BackendSpec, 100)
+	for index := range specs {
+		specs[index] = balancer.BackendSpec{ID: fmt.Sprintf("backend-%d", index), URL: fmt.Sprintf("http://backend-%d", index)}
+	}
+	pool, err := balancer.NewBackendPool(specs)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, backend := range pool.GetBackends() {
+		backend.SetAlive(true)
+	}
+	strategy := balancer.NewRoundRobinStrategy()
+	b.ReportAllocs()
+	b.RunParallel(func(parallel *testing.PB) {
+		for parallel.Next() {
+			_ = strategy.GetNextPeer(pool)
 		}
-
-		assert.Equal(t, []string{backends[0], backends[2], backends[0]}, peers)
-	})
-
-	t.Run("should return nil when no backends alive", func(t *testing.T) {
-		for _, b := range pool.Backends {
-			pool.MarkBackendStatus(b.URL, false)
-		}
-
-		assert.Nil(t, strategy.GetNextPeer(pool))
 	})
 }

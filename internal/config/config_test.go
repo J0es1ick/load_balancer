@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/J0es1ick/test-assignment/internal/config"
+	"github.com/J0es1ick/cloud_test_assignment/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,49 +14,57 @@ import (
 const validConfig = `
 server:
   port: "8080"
-  trusted_proxies:
-    - "172.16.0.0/12"
+  trusted_proxies: ["172.16.0.0/12"]
+management:
+  enabled: true
+  address: ":9090"
+  auth_token_env: "BALANCER_ADMIN_TOKEN"
 database:
   host: "postgres"
   port: "5432"
   user: "postgres"
+  password_env: "POSTGRES_PASSWORD"
   name: "balancer"
   sslmode: "disable"
 backends:
-  - "http://backend1:80"
-  - "http://backend2:80"
+  - id: "backend-1"
+    url: "http://backend:8081"
+  - id: "backend-2"
+    url: "http://backend:8082"
 rate_limit:
-  default_capacity: 100
-  default_rate: "1s"
+  enabled: true
+  storage: "local"
+  capacity: 100
+  refill_per_second: 10
+health_check:
+  mode: "http"
+  path: "/health"
 `
 
-func TestLoadAppliesDefaultsAndValidates(t *testing.T) {
+func TestLoadAppliesDefaultsAndAcceptsSameHostOnDifferentPorts(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, validConfig))
 	require.NoError(t, err)
-
 	assert.Equal(t, 5*time.Second, cfg.Server.ReadHeaderTimeout)
 	assert.Equal(t, 5*time.Second, cfg.HealthCheck.Interval)
 	assert.Equal(t, 2*time.Second, cfg.HealthCheck.Timeout)
 	assert.Equal(t, 1<<20, cfg.Server.MaxHeaderBytes)
+	assert.Equal(t, 2, cfg.Server.Retry.MaxAttempts)
+	assert.Equal(t, 64, cfg.RateLimit.LocalShards)
 }
 
-func TestLoadRejectsInvalidBackendAndUnknownFields(t *testing.T) {
-	invalidBackend := `
-server:
-  port: "8080"
-database:
-  host: "postgres"
-  port: "5432"
-  user: "postgres"
-  name: "balancer"
-backends:
-  - "backend-without-scheme"
+func TestLoadRejectsDuplicateIDsUnknownFieldsAndUnsafeManagement(t *testing.T) {
+	duplicate := validConfig + `
 `
-	_, err := config.Load(writeConfig(t, invalidBackend))
-	assert.Error(t, err)
+	duplicate = replace(duplicate, `id: "backend-2"`, `id: "backend-1"`)
+	_, err := config.Load(writeConfig(t, duplicate))
+	assert.ErrorContains(t, err, "duplicate backend ID")
 
 	_, err = config.Load(writeConfig(t, validConfig+"\nunknown: true\n"))
 	assert.Error(t, err)
+
+	unsafe := replace(validConfig, `auth_token_env: "BALANCER_ADMIN_TOKEN"`, `auth_token_env: ""`)
+	_, err = config.Load(writeConfig(t, unsafe))
+	assert.ErrorContains(t, err, "auth_token_env")
 }
 
 func TestValidateReloadSeparatesDynamicAndImmutableSettings(t *testing.T) {
@@ -64,18 +72,29 @@ func TestValidateReloadSeparatesDynamicAndImmutableSettings(t *testing.T) {
 	require.NoError(t, err)
 	next, err := config.Load(writeConfig(t, validConfig))
 	require.NoError(t, err)
-
-	next.Backends = []string{"http://backend3:80"}
-	next.RateLimit.DefaultCapacity = 50
+	next.Backends = []config.BackendConfig{{ID: "backend-3", URL: "http://backend3:80"}}
+	next.RateLimit.Capacity = 50
 	next.HealthCheck.Interval = 10 * time.Second
 	next.Server.TrustedProxies = []string{"10.0.0.0/8"}
 	assert.NoError(t, config.ValidateReload(current, next))
-
-	next.Server.Port = "9090"
+	next.Server.Port = "9091"
 	assert.Error(t, config.ValidateReload(current, next))
 	next.Server.Port = current.Server.Port
-	next.Database.Host = "other-postgres"
+	next.RateLimit.Storage = "redis"
 	assert.Error(t, config.ValidateReload(current, next))
+	next.RateLimit.Storage = current.RateLimit.Storage
+	next.RateLimit.Retention = 48 * time.Hour
+	assert.Error(t, config.ValidateReload(current, next))
+}
+
+func TestSecretFromEnvSupportsMountedSecretFile(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "admin-token")
+	require.NoError(t, os.WriteFile(secretPath, []byte("file-secret\n"), 0o600))
+	t.Setenv("TEST_ADMIN_TOKEN", "")
+	t.Setenv("TEST_ADMIN_TOKEN_FILE", secretPath)
+	value, err := config.SecretFromEnv("TEST_ADMIN_TOKEN")
+	require.NoError(t, err)
+	assert.Equal(t, "file-secret", value)
 }
 
 func writeConfig(t *testing.T, contents string) string {
@@ -83,4 +102,13 @@ func writeConfig(t *testing.T, contents string) string {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
 	return path
+}
+
+func replace(value, old, replacement string) string {
+	for index := 0; index+len(old) <= len(value); index++ {
+		if value[index:index+len(old)] == old {
+			return value[:index] + replacement + value[index+len(old):]
+		}
+	}
+	return value
 }

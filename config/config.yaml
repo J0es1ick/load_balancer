@@ -1,33 +1,96 @@
 server:
   port: "8080"
+  access_log_sample_rate: 0.01
   trusted_proxies:
     - "127.0.0.1/32"
     - "::1/128"
     - "172.30.0.10/32"
+    - "172.30.0.11/32"
   read_header_timeout: "5s"
-  read_timeout: "15s"
-  write_timeout: "30s"
+  read_timeout: "30s"
+  write_timeout: "0s"
   idle_timeout: "60s"
-  shutdown_timeout: "5s"
+  shutdown_timeout: "10s"
   max_header_bytes: 1048576
+  upstream:
+    dial_timeout: "2s"
+    tls_handshake_timeout: "3s"
+    response_header_timeout: "10s"
+    expect_continue_timeout: "1s"
+    idle_conn_timeout: "90s"
+    max_idle_conns: 256
+    max_idle_conns_per_host: 64
+    max_conns_per_host: 0
+    max_concurrent_requests: 512
+  retry:
+    max_attempts: 2
+    per_try_timeout: "5s"
+    body_limit: 1048576
+    methods: ["GET", "HEAD", "OPTIONS"]
+    statuses: [502, 503, 504]
+    budget_capacity: 100
+    budget_refill_per_second: 10
+  overload:
+    max_concurrent_requests: 2048
+    queue_timeout: "50ms"
+
+management:
+  enabled: true
+  address: ":9090"
+  auth_token_env: "BALANCER_ADMIN_TOKEN"
+  allow_insecure: false
+  enable_pprof: false
+  runtime_mutations: true
+  write_timeout: "30s"
+
+redis:
+  address: "redis:6379"
+  database: 0
+  pool_size: 64
+  dial_timeout: "2s"
+  read_timeout: "50ms"
+  write_timeout: "50ms"
 
 database:
   host: "postgres"
   port: "5432"
   user: "postgres"
-  password: "12345"
+  password_env: "POSTGRES_PASSWORD"
   name: "balancer"
   sslmode: "disable"
   connect_timeout: "5s"
+  max_open_connections: 25
 
 backends:
-  - "http://backend1:80"
-  - "http://backend2:80"
+  - id: "backend-1"
+    url: "http://backend1:80"
+  - id: "backend-2"
+    url: "http://backend2:80"
 
 rate_limit:
-  default_capacity: 100
-  default_rate: "1s"
+  enabled: true
+  storage: "redis"
+  failure_mode: "local-fallback"
+  capacity: 100
+  refill_per_second: 1
+  operation_timeout: "50ms"
+  local_shards: 64
+  local_max_buckets: 100000
+  ipv4_prefix_bits: 32
+  ipv6_prefix_bits: 64
+  cleanup_interval: "6h"
+  retention: "24h"
 
 health_check:
+  mode: "http"
+  path: "/"
   interval: "5s"
   timeout: "2s"
+  failure_threshold: 2
+  success_threshold: 1
+  max_concurrency: 16
+  jitter: "500ms"
+  cooldown: "10s"
+  slow_start: "30s"
+  slow_start_minimum_percent: 10
+  expected_statuses: [200, 204]

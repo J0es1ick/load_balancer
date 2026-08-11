@@ -2,69 +2,61 @@ package config
 
 import (
 	"fmt"
-	"net/netip"
-	"net/url"
 	"os"
-	"reflect"
-	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
 )
 
 const (
-	defaultServerPort        = "8080"
-	defaultReadHeaderTimeout = 5 * time.Second
-	defaultReadTimeout       = 15 * time.Second
-	defaultWriteTimeout      = 30 * time.Second
-	defaultIdleTimeout       = 60 * time.Second
-	defaultShutdownTimeout   = 5 * time.Second
-	defaultMaxHeaderBytes    = 1 << 20
-	defaultHealthInterval    = 5 * time.Second
-	defaultHealthTimeout     = 2 * time.Second
-	defaultConnectTimeout    = 5 * time.Second
-	defaultRateCapacity      = 100
-	defaultRateInterval      = time.Second
+	defaultServerPort                         = "8080"
+	defaultManagementAddress                  = ":9090"
+	defaultReadHeaderTimeout                  = 5 * time.Second
+	defaultReadTimeout                        = 15 * time.Second
+	defaultManagementWriteTimeout             = 30 * time.Second
+	defaultIdleTimeout                        = 60 * time.Second
+	defaultShutdownTimeout                    = 10 * time.Second
+	defaultMaxHeaderBytes                     = 1 << 20
+	defaultDialTimeout                        = 2 * time.Second
+	defaultTLSHandshakeTimeout                = 3 * time.Second
+	defaultResponseHeaderTimeout              = 10 * time.Second
+	defaultExpectContinueTimeout              = time.Second
+	defaultUpstreamIdleTimeout                = 90 * time.Second
+	defaultMaxIdleConnections                 = 256
+	defaultMaxIdleConnectionsHost             = 64
+	defaultMaxConcurrentBackendRequests       = 512
+	defaultMaxConcurrentRequests              = 2048
+	defaultOverloadQueueTimeout               = 50 * time.Millisecond
+	defaultHealthInterval                     = 5 * time.Second
+	defaultHealthTimeout                      = 2 * time.Second
+	defaultHealthPath                         = "/health"
+	defaultHealthConcurrency                  = 16
+	defaultHealthFailureThreshold             = 2
+	defaultHealthSuccessThreshold             = 1
+	defaultHealthCooldown                     = 10 * time.Second
+	defaultHealthJitter                       = 500 * time.Millisecond
+	defaultRateCapacity                       = 100
+	defaultRefillRate                         = 100.0
+	defaultRateOperationTimeout               = 50 * time.Millisecond
+	defaultRateCleanupInterval                = 6 * time.Hour
+	defaultRateRetention                      = 24 * time.Hour
+	defaultLocalShards                        = 64
+	defaultLocalMaxBuckets                    = 100_000
+	defaultIPv4PrefixBits                     = 32
+	defaultIPv6PrefixBits                     = 64
+	defaultRedisAddress                       = "redis:6379"
+	defaultRedisPoolSize                      = 64
+	defaultDatabaseConnectTimeout             = 5 * time.Second
+	defaultDatabaseMaxConnections             = 25
+	defaultRetryAttempts                      = 2
+	defaultRetryPerTryTimeout                 = 5 * time.Second
+	defaultRetryBodyLimit               int64 = 1 << 20
+	defaultRetryBudgetCapacity                = 100
+	defaultRetryBudgetRefill                  = 10.0
+	defaultSlowStartDuration                  = 30 * time.Second
+	defaultSlowStartMinPercent                = 10
 )
-
-type ServerConfig struct {
-	Port              string        `yaml:"port"`
-	TrustedProxies    []string      `yaml:"trusted_proxies"`
-	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
-	ReadTimeout       time.Duration `yaml:"read_timeout"`
-	WriteTimeout      time.Duration `yaml:"write_timeout"`
-	IdleTimeout       time.Duration `yaml:"idle_timeout"`
-	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
-	MaxHeaderBytes    int           `yaml:"max_header_bytes"`
-}
-
-type DatabaseConfig struct {
-	Host           string        `yaml:"host"`
-	Port           string        `yaml:"port"`
-	User           string        `yaml:"user"`
-	Password       string        `yaml:"password"`
-	Name           string        `yaml:"name"`
-	SSLMode        string        `yaml:"sslmode"`
-	ConnectTimeout time.Duration `yaml:"connect_timeout"`
-}
-
-type RateLimitConfig struct {
-	DefaultCapacity int           `yaml:"default_capacity"`
-	DefaultRate     time.Duration `yaml:"default_rate"`
-}
-
-type HealthCheckConfig struct {
-	Interval time.Duration `yaml:"interval"`
-	Timeout  time.Duration `yaml:"timeout"`
-}
-
-type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Database    DatabaseConfig    `yaml:"database"`
-	Backends    []string          `yaml:"backends"`
-	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
-	HealthCheck HealthCheckConfig `yaml:"health_check"`
-}
 
 func InitConfig() (*Config, error) {
 	path := os.Getenv("CONFIG_PATH")
@@ -84,7 +76,6 @@ func Load(path string) (*Config, error) {
 	if err := yaml.UnmarshalStrict(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -102,9 +93,6 @@ func (cfg *Config) applyDefaults() {
 	if cfg.Server.ReadTimeout == 0 {
 		cfg.Server.ReadTimeout = defaultReadTimeout
 	}
-	if cfg.Server.WriteTimeout == 0 {
-		cfg.Server.WriteTimeout = defaultWriteTimeout
-	}
 	if cfg.Server.IdleTimeout == 0 {
 		cfg.Server.IdleTimeout = defaultIdleTimeout
 	}
@@ -114,14 +102,122 @@ func (cfg *Config) applyDefaults() {
 	if cfg.Server.MaxHeaderBytes == 0 {
 		cfg.Server.MaxHeaderBytes = defaultMaxHeaderBytes
 	}
+	if cfg.Server.Upstream.DialTimeout == 0 {
+		cfg.Server.Upstream.DialTimeout = defaultDialTimeout
+	}
+	if cfg.Server.Upstream.TLSHandshakeTimeout == 0 {
+		cfg.Server.Upstream.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
+	}
+	if cfg.Server.Upstream.ResponseHeaderTimeout == 0 {
+		cfg.Server.Upstream.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	}
+	if cfg.Server.Upstream.ExpectContinueTimeout == 0 {
+		cfg.Server.Upstream.ExpectContinueTimeout = defaultExpectContinueTimeout
+	}
+	if cfg.Server.Upstream.IdleConnTimeout == 0 {
+		cfg.Server.Upstream.IdleConnTimeout = defaultUpstreamIdleTimeout
+	}
+	if cfg.Server.Upstream.MaxIdleConns == 0 {
+		cfg.Server.Upstream.MaxIdleConns = defaultMaxIdleConnections
+	}
+	if cfg.Server.Upstream.MaxIdleConnsPerHost == 0 {
+		cfg.Server.Upstream.MaxIdleConnsPerHost = defaultMaxIdleConnectionsHost
+	}
+	if cfg.Server.Upstream.MaxConcurrentRequests == 0 {
+		cfg.Server.Upstream.MaxConcurrentRequests = defaultMaxConcurrentBackendRequests
+	}
+	if cfg.Server.Retry.MaxAttempts == 0 {
+		cfg.Server.Retry.MaxAttempts = defaultRetryAttempts
+	}
+	if cfg.Server.Retry.PerTryTimeout == 0 {
+		cfg.Server.Retry.PerTryTimeout = defaultRetryPerTryTimeout
+	}
+	if cfg.Server.Retry.BodyLimit == 0 {
+		cfg.Server.Retry.BodyLimit = defaultRetryBodyLimit
+	}
+	if len(cfg.Server.Retry.Methods) == 0 {
+		cfg.Server.Retry.Methods = []string{"GET", "HEAD", "OPTIONS"}
+	}
+	if len(cfg.Server.Retry.Statuses) == 0 {
+		cfg.Server.Retry.Statuses = []int{502, 503, 504}
+	}
+	if cfg.Server.Retry.BudgetCapacity == 0 {
+		cfg.Server.Retry.BudgetCapacity = defaultRetryBudgetCapacity
+	}
+	if cfg.Server.Retry.BudgetRefillPerSecond == 0 {
+		cfg.Server.Retry.BudgetRefillPerSecond = defaultRetryBudgetRefill
+	}
+	if cfg.Server.Overload.MaxConcurrentRequests == 0 {
+		cfg.Server.Overload.MaxConcurrentRequests = defaultMaxConcurrentRequests
+	}
+	if cfg.Server.Overload.QueueTimeout == 0 {
+		cfg.Server.Overload.QueueTimeout = defaultOverloadQueueTimeout
+	}
+	if cfg.Management.Enabled && cfg.Management.Address == "" {
+		cfg.Management.Address = defaultManagementAddress
+	}
+	if cfg.Management.Enabled && cfg.Management.WriteTimeout == 0 {
+		cfg.Management.WriteTimeout = defaultManagementWriteTimeout
+	}
 	if cfg.Database.ConnectTimeout == 0 {
-		cfg.Database.ConnectTimeout = defaultConnectTimeout
+		cfg.Database.ConnectTimeout = defaultDatabaseConnectTimeout
 	}
-	if cfg.RateLimit.DefaultCapacity == 0 {
-		cfg.RateLimit.DefaultCapacity = defaultRateCapacity
+	if cfg.Database.MaxOpenConns == 0 {
+		cfg.Database.MaxOpenConns = defaultDatabaseMaxConnections
 	}
-	if cfg.RateLimit.DefaultRate == 0 {
-		cfg.RateLimit.DefaultRate = defaultRateInterval
+	if cfg.Redis.Address == "" {
+		cfg.Redis.Address = defaultRedisAddress
+	}
+	if cfg.Redis.PoolSize == 0 {
+		cfg.Redis.PoolSize = defaultRedisPoolSize
+	}
+	if cfg.Redis.DialTimeout == 0 {
+		cfg.Redis.DialTimeout = defaultDialTimeout
+	}
+	if cfg.Redis.ReadTimeout == 0 {
+		cfg.Redis.ReadTimeout = defaultRateOperationTimeout
+	}
+	if cfg.Redis.WriteTimeout == 0 {
+		cfg.Redis.WriteTimeout = defaultRateOperationTimeout
+	}
+	if cfg.RateLimit.Storage == "" {
+		cfg.RateLimit.Storage = "local"
+	}
+	if cfg.RateLimit.FailureMode == "" {
+		cfg.RateLimit.FailureMode = "fail-open"
+	}
+	if cfg.RateLimit.Capacity == 0 {
+		cfg.RateLimit.Capacity = defaultRateCapacity
+	}
+	if cfg.RateLimit.RefillPerSecond == 0 {
+		cfg.RateLimit.RefillPerSecond = defaultRefillRate
+	}
+	if cfg.RateLimit.OperationTimeout == 0 {
+		cfg.RateLimit.OperationTimeout = defaultRateOperationTimeout
+	}
+	if cfg.RateLimit.LocalShards == 0 {
+		cfg.RateLimit.LocalShards = defaultLocalShards
+	}
+	if cfg.RateLimit.LocalMaxBuckets == 0 {
+		cfg.RateLimit.LocalMaxBuckets = defaultLocalMaxBuckets
+	}
+	if cfg.RateLimit.IPv4PrefixBits == 0 {
+		cfg.RateLimit.IPv4PrefixBits = defaultIPv4PrefixBits
+	}
+	if cfg.RateLimit.IPv6PrefixBits == 0 {
+		cfg.RateLimit.IPv6PrefixBits = defaultIPv6PrefixBits
+	}
+	if cfg.RateLimit.CleanupInterval == 0 {
+		cfg.RateLimit.CleanupInterval = defaultRateCleanupInterval
+	}
+	if cfg.RateLimit.Retention == 0 {
+		cfg.RateLimit.Retention = defaultRateRetention
+	}
+	if cfg.HealthCheck.Mode == "" {
+		cfg.HealthCheck.Mode = "http"
+	}
+	if cfg.HealthCheck.Path == "" {
+		cfg.HealthCheck.Path = defaultHealthPath
 	}
 	if cfg.HealthCheck.Interval == 0 {
 		cfg.HealthCheck.Interval = defaultHealthInterval
@@ -129,89 +225,50 @@ func (cfg *Config) applyDefaults() {
 	if cfg.HealthCheck.Timeout == 0 {
 		cfg.HealthCheck.Timeout = defaultHealthTimeout
 	}
+	if cfg.HealthCheck.FailureThreshold == 0 {
+		cfg.HealthCheck.FailureThreshold = defaultHealthFailureThreshold
+	}
+	if cfg.HealthCheck.SuccessThreshold == 0 {
+		cfg.HealthCheck.SuccessThreshold = defaultHealthSuccessThreshold
+	}
+	if cfg.HealthCheck.MaxConcurrency == 0 {
+		cfg.HealthCheck.MaxConcurrency = defaultHealthConcurrency
+	}
+	if cfg.HealthCheck.Jitter == 0 {
+		cfg.HealthCheck.Jitter = defaultHealthJitter
+	}
+	if cfg.HealthCheck.Cooldown == 0 {
+		cfg.HealthCheck.Cooldown = defaultHealthCooldown
+	}
+	if len(cfg.HealthCheck.ExpectedStatuses) == 0 {
+		cfg.HealthCheck.ExpectedStatuses = []int{200, 204}
+	}
+	if cfg.HealthCheck.SlowStart == 0 {
+		cfg.HealthCheck.SlowStart = defaultSlowStartDuration
+	}
+	if cfg.HealthCheck.SlowStartMinimum == 0 {
+		cfg.HealthCheck.SlowStartMinimum = defaultSlowStartMinPercent
+	}
 }
 
-func (cfg *Config) Validate() error {
-	port, err := strconv.Atoi(cfg.Server.Port)
-	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("server.port must be a number between 1 and 65535")
+func SecretFromEnv(name string) (string, error) {
+	if name == "" {
+		return "", nil
 	}
-
-	if cfg.Server.ReadHeaderTimeout <= 0 ||
-		cfg.Server.ReadTimeout <= 0 ||
-		cfg.Server.WriteTimeout <= 0 ||
-		cfg.Server.IdleTimeout <= 0 ||
-		cfg.Server.ShutdownTimeout <= 0 {
-		return fmt.Errorf("server timeouts must be positive")
+	if value, exists := os.LookupEnv(name); exists && value != "" {
+		return value, nil
 	}
-	if cfg.Server.MaxHeaderBytes < 1024 {
-		return fmt.Errorf("server.max_header_bytes must be at least 1024")
+	fileName := os.Getenv(name + "_FILE")
+	if fileName == "" {
+		return "", fmt.Errorf("required environment variable %s or %s_FILE is not set", name, name)
 	}
-
-	for _, proxy := range cfg.Server.TrustedProxies {
-		if _, err := parsePrefix(proxy); err != nil {
-			return fmt.Errorf("invalid trusted proxy %q: %w", proxy, err)
-		}
-	}
-
-	if cfg.Database.Host == "" || cfg.Database.Port == "" || cfg.Database.User == "" || cfg.Database.Name == "" {
-		return fmt.Errorf("database host, port, user and name are required")
-	}
-	if cfg.Database.ConnectTimeout <= 0 {
-		return fmt.Errorf("database.connect_timeout must be positive")
-	}
-
-	if len(cfg.Backends) == 0 {
-		return fmt.Errorf("at least one backend is required")
-	}
-	backendIDs := make(map[string]struct{}, len(cfg.Backends))
-	for _, rawURL := range cfg.Backends {
-		backendURL, err := url.Parse(rawURL)
-		if err != nil || backendURL.Host == "" || (backendURL.Scheme != "http" && backendURL.Scheme != "https") {
-			return fmt.Errorf("invalid backend URL %q", rawURL)
-		}
-		id := backendURL.Hostname()
-		if _, exists := backendIDs[id]; exists {
-			return fmt.Errorf("backend IDs must be unique; duplicate hostname %q", id)
-		}
-		backendIDs[id] = struct{}{}
-	}
-
-	if cfg.RateLimit.DefaultCapacity < 1 {
-		return fmt.Errorf("rate_limit.default_capacity must be positive")
-	}
-	if cfg.RateLimit.DefaultRate <= 0 {
-		return fmt.Errorf("rate_limit.default_rate must be positive")
-	}
-	if cfg.HealthCheck.Interval <= 0 || cfg.HealthCheck.Timeout <= 0 {
-		return fmt.Errorf("health_check interval and timeout must be positive")
-	}
-
-	return nil
-}
-
-func ValidateReload(current, next *Config) error {
-	if current.Server.Port != next.Server.Port ||
-		current.Server.ReadHeaderTimeout != next.Server.ReadHeaderTimeout ||
-		current.Server.ReadTimeout != next.Server.ReadTimeout ||
-		current.Server.WriteTimeout != next.Server.WriteTimeout ||
-		current.Server.IdleTimeout != next.Server.IdleTimeout ||
-		current.Server.MaxHeaderBytes != next.Server.MaxHeaderBytes {
-		return fmt.Errorf("server port and HTTP timeout changes require a restart")
-	}
-	if !reflect.DeepEqual(current.Database, next.Database) {
-		return fmt.Errorf("database configuration changes require a restart")
-	}
-	return nil
-}
-
-func parsePrefix(value string) (netip.Prefix, error) {
-	if prefix, err := netip.ParsePrefix(value); err == nil {
-		return prefix.Masked(), nil
-	}
-	address, err := netip.ParseAddr(value)
+	data, err := os.ReadFile(fileName)
 	if err != nil {
-		return netip.Prefix{}, err
+		return "", fmt.Errorf("read secret %s_FILE: %w", name, err)
 	}
-	return netip.PrefixFrom(address, address.BitLen()), nil
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", fmt.Errorf("secret file from %s_FILE is empty", name)
+	}
+	return value, nil
 }

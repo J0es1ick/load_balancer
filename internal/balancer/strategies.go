@@ -1,38 +1,39 @@
 package balancer
 
-import "sync"
+import "sync/atomic"
 
 type Strategy interface {
 	GetNextPeer(*BackendPool) *Backend
+	GetNextPeerExcluding(*BackendPool, map[string]struct{}) *Backend
 }
 
-type RoundRobinStrategy struct {
-	counter uint64
-	mux      sync.Mutex
-}
+type RoundRobinStrategy struct{ counter atomic.Uint64 }
 
-func NewRoundRobinStrategy() *RoundRobinStrategy {
-	return &RoundRobinStrategy{}
-}
+func NewRoundRobinStrategy() *RoundRobinStrategy { return &RoundRobinStrategy{} }
 
 func (s *RoundRobinStrategy) GetNextPeer(pool *BackendPool) *Backend {
-	s.mux.Lock()
-	defer s.mux.Unlock()
+	return s.GetNextPeerExcluding(pool, nil)
+}
 
-	backends := pool.GetBackends()
-	
-	aliveBackends := make([]*Backend, 0, len(backends))
-	for _, b := range backends {
-		if b.IsAlive() {
-			aliveBackends = append(aliveBackends, b)
-		}
-	}
-
-	if len(aliveBackends) == 0 {
+func (s *RoundRobinStrategy) GetNextPeerExcluding(pool *BackendPool, excluded map[string]struct{}) *Backend {
+	backends := pool.AvailableBackends()
+	if len(backends) == 0 {
 		return nil
 	}
-
-	next := int(s.counter % uint64(len(aliveBackends)))
-	s.counter++
-	return aliveBackends[next]
+	start := s.counter.Add(1) - 1
+	var fallback *Backend
+	for offset := uint64(0); offset < uint64(len(backends)); offset++ {
+		candidate := backends[(start+offset)%uint64(len(backends))]
+		if _, exists := excluded[candidate.ID()]; exists {
+			continue
+		}
+		if fallback == nil {
+			fallback = candidate
+		}
+		percentage := candidate.SlowStartPercent()
+		if percentage >= 100 || int((start+offset)%100) < percentage {
+			return candidate
+		}
+	}
+	return fallback
 }

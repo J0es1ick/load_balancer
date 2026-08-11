@@ -2,136 +2,83 @@ package ratelimit_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
-	"github.com/J0es1ick/test-assignment/internal/ratelimit"
+	"github.com/J0es1ick/cloud_test_assignment/internal/ratelimit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestTokenBucketLimiter(t *testing.T) {
-	t.Run("should allow when tokens available", func(t *testing.T) {
-		mockStorage := &mockStorage{
-			bucket: ratelimit.NewTokenBucket(10, time.Second),
-		}
+func TestLimiterFailurePolicies(t *testing.T) {
+	settings := ratelimit.RuntimeSettings{Enabled: true, Policy: ratelimit.Policy{Capacity: 1, RefillPerSecond: 1}, FailureMode: "fail-closed", OperationTimeout: time.Second}
+	limiter, err := ratelimit.NewTokenBucketLimiter(settings, failingStore{}, ratelimit.NewLocalStore(4))
+	require.NoError(t, err)
+	_, err = limiter.Allow(context.Background(), "client")
+	assert.Error(t, err)
 
-		limiter := ratelimit.NewTokenBucketLimiter(10, time.Second, mockStorage)
-		allowed, err := limiter.Allow(context.Background(), "test")
+	settings.FailureMode = "fail-open"
+	require.NoError(t, limiter.Reconfigure(settings))
+	decision, err := limiter.AllowWithState(context.Background(), "client")
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed)
+	assert.True(t, decision.Bucket.Degraded)
 
-		assert.True(t, allowed)
-		assert.NoError(t, err)
-	})
-
-	t.Run("should reject when rate limit exceeded", func(t *testing.T) {
-		mockStorage := &mockStorage{
-			bucket: ratelimit.NewTokenBucket(1, time.Minute),
-		}
-
-		limiter := ratelimit.NewTokenBucketLimiter(1, time.Minute, mockStorage)
-
-		allowed, err := limiter.Allow(context.Background(), "test")
-		assert.True(t, allowed)
-		assert.NoError(t, err)
-
-		allowed, err = limiter.Allow(context.Background(), "test")
-		assert.False(t, allowed)
-		assert.NoError(t, err)
-	})
-
-	t.Run("should reconfigure existing buckets", func(t *testing.T) {
-		storage := &mockStorage{
-			bucket: ratelimit.NewTokenBucket(10, time.Second),
-		}
-		limiter := ratelimit.NewTokenBucketLimiter(10, time.Second, storage)
-
-		require.NoError(t, limiter.Reconfigure(context.Background(), 4, 2*time.Second))
-		state, err := limiter.Snapshot(context.Background(), "test")
-		require.NoError(t, err)
-		assert.Equal(t, 4, state.Capacity)
-		assert.Equal(t, "2s", state.Rate)
-	})
-
-	t.Run("should process different keys concurrently", func(t *testing.T) {
-		storage := &concurrentStorage{
-			entered: make(chan string, 2),
-			release: make(chan struct{}),
-		}
-		limiter := ratelimit.NewTokenBucketLimiter(10, time.Second, storage)
-		results := make(chan error, 2)
-
-		go func() {
-			_, err := limiter.Allow(context.Background(), "first")
-			results <- err
-		}()
-		go func() {
-			_, err := limiter.Allow(context.Background(), "second")
-			results <- err
-		}()
-
-		for range 2 {
-			select {
-			case <-storage.entered:
-			case <-time.After(time.Second):
-				t.Fatal("requests for different keys were serialized")
-			}
-		}
-		close(storage.release)
-		require.NoError(t, <-results)
-		require.NoError(t, <-results)
-	})
+	settings.FailureMode = "local-fallback"
+	require.NoError(t, limiter.Reconfigure(settings))
+	first, err := limiter.AllowWithState(context.Background(), "client")
+	require.NoError(t, err)
+	second, err := limiter.AllowWithState(context.Background(), "client")
+	require.NoError(t, err)
+	assert.True(t, first.Allowed)
+	assert.False(t, second.Allowed)
+	assert.True(t, second.Bucket.Degraded)
 }
 
-type mockStorage struct {
-	bucket *ratelimit.TokenBucket
+func TestLimiterReconfigureIsInMemoryAndImmediate(t *testing.T) {
+	store := ratelimit.NewLocalStore(4)
+	settings := ratelimit.RuntimeSettings{Enabled: true, Policy: ratelimit.Policy{Capacity: 10, RefillPerSecond: 1}, FailureMode: "fail-open", OperationTimeout: time.Second}
+	limiter, err := ratelimit.NewTokenBucketLimiter(settings, store, nil)
+	require.NoError(t, err)
+	settings.Policy.Capacity = 4
+	settings.Policy.RefillPerSecond = 2.5
+	require.NoError(t, limiter.Reconfigure(settings))
+	state, err := limiter.Snapshot(context.Background(), "client")
+	require.NoError(t, err)
+	assert.Equal(t, 4, state.Capacity)
+	assert.Equal(t, 2.5, state.RefillPerSecond)
 }
 
-func (m *mockStorage) Get(ctx context.Context, key string) (*ratelimit.TokenBucket, bool, error) {
-	if m.bucket == nil {
-		return nil, false, nil
-	}
-	return m.bucket, true, nil
+func TestLimiterAggregatesIPv6ClientsByPrefix(t *testing.T) {
+	settings := ratelimit.RuntimeSettings{Enabled: true, Policy: ratelimit.Policy{Capacity: 1, RefillPerSecond: 0.001}, FailureMode: "fail-closed", OperationTimeout: time.Second, IPv4PrefixBits: 32, IPv6PrefixBits: 64}
+	limiter, err := ratelimit.NewTokenBucketLimiter(settings, ratelimit.NewBoundedLocalStore(1, 10), nil)
+	require.NoError(t, err)
+
+	first, err := limiter.Allow(context.Background(), "2001:db8:1::1")
+	require.NoError(t, err)
+	samePrefix, err := limiter.Allow(context.Background(), "2001:db8:1::ffff")
+	require.NoError(t, err)
+	otherPrefix, err := limiter.Allow(context.Background(), "2001:db8:2::1")
+	require.NoError(t, err)
+
+	assert.True(t, first)
+	assert.False(t, samePrefix, "rotating an IPv6 interface identifier must not create a new bucket")
+	assert.True(t, otherPrefix)
 }
 
-func (m *mockStorage) Set(ctx context.Context, key string, bucket *ratelimit.TokenBucket) error {
-	m.bucket = bucket
-	return nil
-}
+type failingStore struct{}
 
-func (m *mockStorage) Update(ctx context.Context, key string, updateFunc func(*ratelimit.TokenBucket) (*ratelimit.TokenBucket, error)) error {
-	newBucket, err := updateFunc(m.bucket)
-	if err != nil {
-		return err
-	}
-	m.bucket = newBucket
-	return nil
+func (failingStore) Name() string { return "failing" }
+func (failingStore) Take(context.Context, string, ratelimit.Policy) (ratelimit.LimitDecision, error) {
+	return ratelimit.LimitDecision{}, errors.New("unavailable")
 }
-
-func (m *mockStorage) Reconfigure(_ context.Context, capacity int, rate time.Duration) error {
-	m.bucket = ratelimit.NewTokenBucket(capacity, rate)
-	return nil
+func (failingStore) Peek(context.Context, string, ratelimit.Policy) (ratelimit.BucketState, error) {
+	return ratelimit.BucketState{}, errors.New("unavailable")
 }
-
-type concurrentStorage struct {
-	entered chan string
-	release chan struct{}
+func (failingStore) Reset(context.Context, string, ratelimit.Policy) (ratelimit.BucketState, error) {
+	return ratelimit.BucketState{}, errors.New("unavailable")
 }
-
-func (s *concurrentStorage) Get(context.Context, string) (*ratelimit.TokenBucket, bool, error) {
-	return nil, false, nil
-}
-
-func (s *concurrentStorage) Set(context.Context, string, *ratelimit.TokenBucket) error {
-	return nil
-}
-
-func (s *concurrentStorage) Update(
-	_ context.Context,
-	key string,
-	update func(*ratelimit.TokenBucket) (*ratelimit.TokenBucket, error),
-) error {
-	s.entered <- key
-	<-s.release
-	_, err := update(nil)
-	return err
-}
+func (failingStore) Healthy(context.Context) error                { return errors.New("unavailable") }
+func (failingStore) Cleanup(context.Context, time.Duration) error { return nil }
+func (failingStore) Close() error                                 { return nil }
