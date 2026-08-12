@@ -21,7 +21,9 @@ import (
 )
 
 func TestManagementPlaneIsAuthenticatedAndUsesRealComponents(t *testing.T) {
+	observedHeaders := make(chan http.Header, 1)
 	backendServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		observedHeaders <- request.Header.Clone()
 		_, _ = writer.Write([]byte("backend response"))
 	}))
 	defer backendServer.Close()
@@ -71,9 +73,24 @@ func TestManagementPlaneIsAuthenticatedAndUsesRealComponents(t *testing.T) {
 	assert.Equal(t, "10s", status.Retry.PerTryTimeout)
 
 	requestRecorder := httptest.NewRecorder()
-	httpServer.ManagementHandler().ServeHTTP(requestRecorder, dashboardRequest(http.MethodGet, "/api/dashboard/request", "", true))
+	dashboardProxyRequest := dashboardRequest(http.MethodGet, "/api/dashboard/request", "", true)
+	dashboardProxyRequest.Header.Set("Accept", "application/json")
+	dashboardProxyRequest.Header.Set("Cookie", "session=management-secret")
+	dashboardProxyRequest.Header.Set("Proxy-Authorization", "Basic management-secret")
+	dashboardProxyRequest.Header.Set("X-Balancer-CSRF", "1")
+	dashboardProxyRequest.Header.Set("X-Management-Only", "secret")
+	dashboardProxyRequest.Header.Set("X-Request-ID", "dashboard-request-id")
+	httpServer.ManagementHandler().ServeHTTP(requestRecorder, dashboardProxyRequest)
 	assert.Equal(t, http.StatusOK, requestRecorder.Code)
 	assert.Equal(t, "api", requestRecorder.Header().Get("X-Balancer-Backend"))
+	backendHeaders := <-observedHeaders
+	assert.Empty(t, backendHeaders.Get("Authorization"))
+	assert.Empty(t, backendHeaders.Get("Cookie"))
+	assert.Empty(t, backendHeaders.Get("Proxy-Authorization"))
+	assert.Empty(t, backendHeaders.Get("X-Balancer-CSRF"))
+	assert.Empty(t, backendHeaders.Get("X-Management-Only"))
+	assert.Equal(t, "application/json", backendHeaders.Get("Accept"))
+	assert.Equal(t, "dashboard-request-id", backendHeaders.Get("X-Request-ID"))
 
 	disableRecorder := httptest.NewRecorder()
 	httpServer.ManagementHandler().ServeHTTP(disableRecorder, dashboardRequest(http.MethodPost, "/api/dashboard/backends/api", `{"enabled":false}`, true))

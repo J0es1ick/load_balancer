@@ -170,7 +170,11 @@ func (b *Backend) TryAcquire() bool {
 			return false
 		}
 		if b.inflight.CompareAndSwap(current, current+1) {
-			return true
+			if b.IsAlive() {
+				return true
+			}
+			b.inflight.Add(-1)
+			return false
 		}
 	}
 }
@@ -248,6 +252,11 @@ type BackendPool struct {
 	policy    atomic.Pointer[PassivePolicy]
 }
 
+type BackendReplacement struct {
+	owner    *BackendPool
+	backends backendList
+}
+
 func NewBackendPool(specs []BackendSpec, policy ...PassivePolicy) (*BackendPool, error) {
 	pool := &BackendPool{}
 	selectedPolicy := PassivePolicy{FailureThreshold: 2, Cooldown: 10 * time.Second, MaxConcurrentRequests: 512, SlowStartMinimum: 10}
@@ -258,6 +267,9 @@ func NewBackendPool(specs []BackendSpec, policy ...PassivePolicy) (*BackendPool,
 	backends, err := pool.buildBackends(specs)
 	if err != nil {
 		return nil, err
+	}
+	for _, backend := range backends {
+		backend.pool = pool
 	}
 	pool.all.Store(&backends)
 	pool.refreshAvailable()
@@ -281,7 +293,7 @@ func (p *BackendPool) buildBackends(specs []BackendSpec) (backendList, error) {
 		}
 		ids[spec.ID] = struct{}{}
 		urls[backendURL.String()] = struct{}{}
-		backend := &Backend{id: spec.ID, URL: backendURL, pool: p}
+		backend := &Backend{id: spec.ID, URL: backendURL}
 		backend.enabled.Store(!spec.Disabled)
 		backends = append(backends, backend)
 	}
@@ -289,9 +301,24 @@ func (p *BackendPool) buildBackends(specs []BackendSpec) (backendList, error) {
 }
 
 func (p *BackendPool) ReplaceBackends(specs []BackendSpec) error {
-	replacement, err := p.buildBackends(specs)
+	replacement, err := p.PrepareReplacement(specs)
 	if err != nil {
 		return err
+	}
+	return p.CommitReplacement(replacement)
+}
+
+func (p *BackendPool) PrepareReplacement(specs []BackendSpec) (*BackendReplacement, error) {
+	backends, err := p.buildBackends(specs)
+	if err != nil {
+		return nil, err
+	}
+	return &BackendReplacement{owner: p, backends: backends}, nil
+}
+
+func (p *BackendPool) CommitReplacement(replacement *BackendReplacement) error {
+	if replacement == nil || replacement.owner != p {
+		return fmt.Errorf("backend replacement belongs to another pool")
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -299,14 +326,61 @@ func (p *BackendPool) ReplaceBackends(specs []BackendSpec) error {
 	for _, backend := range p.GetBackends() {
 		current[backend.ID()+"\x00"+backend.URL.String()] = backend
 	}
-	for index, backend := range replacement {
+	for index, backend := range replacement.backends {
 		if previous, exists := current[backend.ID()+"\x00"+backend.URL.String()]; exists {
-			replacement[index] = previous
+			previous.applyReplacementState(backend.IsEnabled(), backend.IsHealthy())
+			replacement.backends[index] = previous
+		} else {
+			backend.pool = p
 		}
 	}
-	p.all.Store(&replacement)
+	p.all.Store(&replacement.backends)
 	p.refreshAvailableLocked()
 	return nil
+}
+
+func (b *Backend) applyReplacementState(enabled, warmedHealthy bool) {
+	b.stateMu.Lock()
+	b.draining.Store(false)
+	b.enabled.Store(enabled)
+	if warmedHealthy && !b.healthy.Load() {
+		b.setAliveLocked(true)
+	}
+	b.stateMu.Unlock()
+}
+
+func (replacement *BackendReplacement) ready() bool {
+	if replacement == nil {
+		return false
+	}
+	for _, backend := range replacement.backends {
+		if backend.IsAlive() {
+			return true
+		}
+	}
+	return false
+}
+
+func (replacement *BackendReplacement) needsWarmup() bool {
+	if replacement == nil {
+		return false
+	}
+	current := make(map[string]*Backend)
+	for _, backend := range replacement.owner.GetBackends() {
+		current[backend.ID()+"\x00"+backend.URL.String()] = backend
+	}
+	hasEnabledBackend := false
+	for _, candidate := range replacement.backends {
+		if !candidate.IsEnabled() {
+			continue
+		}
+		hasEnabledBackend = true
+		previous := current[candidate.ID()+"\x00"+candidate.URL.String()]
+		if previous != nil && previous.IsHealthy() && !previous.IsEjected() {
+			return false
+		}
+	}
+	return hasEnabledBackend
 }
 
 func (p *BackendPool) UpdatePassivePolicy(policy PassivePolicy) {

@@ -110,7 +110,36 @@ func (hc *HealthChecker) Check(ctx context.Context) {
 	hc.checkMu.Lock()
 	defer hc.checkMu.Unlock()
 	settings := hc.Settings()
-	backends := hc.pool.GetBackends()
+	hc.check(ctx, hc.pool.GetBackends(), settings)
+}
+
+func (hc *HealthChecker) WarmReplacement(ctx context.Context, replacement *BackendReplacement, settings HealthSettings) error {
+	normalizeHealthSettings(&settings)
+	if err := validateHealthSettings(settings); err != nil {
+		return err
+	}
+	if replacement == nil || replacement.owner != hc.pool {
+		return fmt.Errorf("backend replacement belongs to another pool")
+	}
+	if !replacement.needsWarmup() {
+		return nil
+	}
+
+	hc.checkMu.Lock()
+	defer hc.checkMu.Unlock()
+	for range settings.SuccessThreshold {
+		hc.check(ctx, replacement.backends, settings)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("warm backend replacement: %w", err)
+		}
+	}
+	if !replacement.ready() {
+		return fmt.Errorf("backend replacement is not ready: no enabled backend passed %d consecutive health checks", settings.SuccessThreshold)
+	}
+	return nil
+}
+
+func (hc *HealthChecker) check(ctx context.Context, backends []*Backend, settings HealthSettings) {
 	if len(backends) == 0 {
 		return
 	}

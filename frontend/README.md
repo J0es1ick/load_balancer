@@ -26,7 +26,7 @@ npm run preview:demo
 docker compose up --build
 ```
 
-Откройте `http://127.0.0.1:3000`. Nginx внутри frontend-контейнера проксирует `/api/` на management listener и добавляет bearer token сервер-сервер; credential не попадает в JavaScript.
+Откройте `http://127.0.0.1:3000`. Nginx внутри frontend-контейнера проксирует `/api/` на management listener и добавляет bearer token сервер-сервер; credential не попадает в JavaScript. При тестовом `/api/dashboard/request` Go-сервер создаёт новый upstream-запрос по whitelist, поэтому этот токен, cookies и CSRF-заголовок не уходят backend-у.
 
 Изменяющие запросы SPA отправляют `Content-Type: application/json` и `X-Balancer-CSRF: 1`. Management API отклоняет cross-site и простые form-запросы, поэтому сторонний сайт не может воспользоваться токеном, который nginx добавляет автоматически.
 

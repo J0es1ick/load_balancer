@@ -20,25 +20,29 @@ func applyReload(ctx context.Context, current, next *config.Config, pool *balanc
 	if err := config.ValidateReload(current, next); err != nil {
 		return err
 	}
-	if _, err := balancer.NewBackendPool(backendSpecs(next.Backends), passivePolicy(next.HealthCheck, next.Server.Upstream)); err != nil {
+	replacement, err := pool.PrepareReplacement(backendSpecs(next.Backends))
+	if err != nil {
 		return err
+	}
+	nextHealth := healthSettings(next.HealthCheck, next.Server.Upstream)
+	if err := healthChecker.WarmReplacement(ctx, replacement, nextHealth); err != nil {
+		return fmt.Errorf("warm backend replacement: %w", err)
 	}
 	if err := limiter.Reconfigure(limiterSettings(next.RateLimit)); err != nil {
 		return fmt.Errorf("reconfigure rate limiter: %w", err)
 	}
-	if err := pool.ReplaceBackends(backendSpecs(next.Backends)); err != nil {
-		return fmt.Errorf("replace backends: %w", err)
-	}
-	if err := healthChecker.Update(healthSettings(next.HealthCheck, next.Server.Upstream)); err != nil {
+	if err := healthChecker.Update(nextHealth); err != nil {
 		return err
 	}
 	loadBalancer.UpdateRetryPolicy(retryPolicy(next.Server.Retry))
 	if httpServer != nil {
-		if err := httpServer.UpdateRuntime(next.Server.TrustedProxies, healthSettings(next.HealthCheck, next.Server.Upstream)); err != nil {
+		if err := httpServer.UpdateRuntime(next.Server.TrustedProxies, nextHealth); err != nil {
 			return err
 		}
 	}
-	healthChecker.Check(ctx)
+	if err := pool.CommitReplacement(replacement); err != nil {
+		return fmt.Errorf("commit backend replacement: %w", err)
+	}
 	return nil
 }
 

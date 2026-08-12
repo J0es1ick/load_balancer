@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -15,18 +17,24 @@ import (
 )
 
 func TestApplyReloadUpdatesDynamicComponentsWithoutStorageRewrite(t *testing.T) {
+	backendServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer backendServer.Close()
 	current := reloadTestConfig()
 	next := cloneConfig(current)
-	next.Backends = []config.BackendConfig{{ID: "replacement", URL: "http://127.0.0.1:2"}}
+	next.Backends = []config.BackendConfig{{ID: "replacement", URL: backendServer.URL}}
 	next.RateLimit.Capacity = 4
 	next.RateLimit.RefillPerSecond = 2.5
 	next.HealthCheck.Interval = 10 * time.Second
-	next.HealthCheck.Timeout = 10 * time.Millisecond
+	next.HealthCheck.Timeout = time.Second
+	next.HealthCheck.Mode = "http"
 	next.Server.TrustedProxies = []string{"192.0.2.0/24"}
 	next.Server.Retry.MaxAttempts = 3
 
 	pool, err := balancer.NewBackendPool(backendSpecs(current.Backends))
 	require.NoError(t, err)
+	pool.GetBackends()[0].SetAlive(true)
 	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
 	limiter, err := ratelimit.NewTokenBucketLimiter(limiterSettings(current.RateLimit), ratelimit.NewLocalStore(4), nil)
 	require.NoError(t, err)
@@ -41,6 +49,73 @@ func TestApplyReloadUpdatesDynamicComponentsWithoutStorageRewrite(t *testing.T) 
 	assert.Equal(t, 4, limiter.Settings().Policy.Capacity)
 	assert.Equal(t, 2.5, limiter.Settings().Policy.RefillPerSecond)
 	assert.Equal(t, 10*time.Second, healthChecker.Settings().Interval)
+	assert.True(t, pool.Ready())
+}
+
+func TestApplyReloadKeepsCurrentPoolUntilReplacementIsWarm(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	backendServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		close(probeStarted)
+		<-releaseProbe
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer backendServer.Close()
+
+	current := reloadTestConfig()
+	next := cloneConfig(current)
+	next.Backends = []config.BackendConfig{{ID: "replacement", URL: backendServer.URL}}
+	next.HealthCheck.Mode = "http"
+	next.HealthCheck.Timeout = time.Second
+
+	pool, err := balancer.NewBackendPool(backendSpecs(current.Backends))
+	require.NoError(t, err)
+	original := pool.GetBackends()[0]
+	original.SetAlive(true)
+	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
+	limiter, err := ratelimit.NewTokenBucketLimiter(limiterSettings(current.RateLimit), ratelimit.NewLocalStore(4), nil)
+	require.NoError(t, err)
+	healthChecker, err := balancer.NewHealthChecker(pool, healthSettings(current.HealthCheck))
+	require.NoError(t, err)
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- applyReload(context.Background(), current, next, pool, healthChecker, limiter, loadBalancer, nil)
+	}()
+	<-probeStarted
+	assert.Same(t, original, pool.GetBackends()[0])
+	assert.True(t, pool.Ready(), "the current pool must remain routable during replacement warm-up")
+	close(releaseProbe)
+	require.NoError(t, <-reloadDone)
+	assert.Equal(t, "replacement", pool.GetBackends()[0].ID())
+	assert.True(t, pool.Ready())
+}
+
+func TestApplyReloadRejectsUnavailableReplacementWithoutPublishingIt(t *testing.T) {
+	unavailable := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unavailableURL := unavailable.URL
+	unavailable.Close()
+
+	current := reloadTestConfig()
+	next := cloneConfig(current)
+	next.Backends = []config.BackendConfig{{ID: "unavailable", URL: unavailableURL}}
+	next.HealthCheck.Mode = "http"
+	next.HealthCheck.Timeout = 100 * time.Millisecond
+
+	pool, err := balancer.NewBackendPool(backendSpecs(current.Backends))
+	require.NoError(t, err)
+	original := pool.GetBackends()[0]
+	original.SetAlive(true)
+	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
+	limiter, err := ratelimit.NewTokenBucketLimiter(limiterSettings(current.RateLimit), ratelimit.NewLocalStore(4), nil)
+	require.NoError(t, err)
+	healthChecker, err := balancer.NewHealthChecker(pool, healthSettings(current.HealthCheck))
+	require.NoError(t, err)
+
+	err = applyReload(context.Background(), current, next, pool, healthChecker, limiter, loadBalancer, nil)
+	assert.ErrorContains(t, err, "backend replacement is not ready")
+	assert.Same(t, original, pool.GetBackends()[0])
+	assert.True(t, pool.Ready())
 }
 
 func reloadTestConfig() *config.Config {

@@ -49,6 +49,26 @@ func TestBackendPoolSupportsDisabledReserveAndActiveCount(t *testing.T) {
 	assert.False(t, pool.SetActiveCount(4))
 }
 
+func TestBackendPoolReloadAppliesDeclarativeDisabledState(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}})
+	require.NoError(t, err)
+	backend := pool.GetBackends()[0]
+	backend.SetAlive(true)
+	backend.SetDraining(true)
+
+	require.NoError(t, pool.ReplaceBackends([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}))
+	require.Same(t, backend, pool.GetBackends()[0], "stable backend identity should preserve counters and health")
+	assert.True(t, backend.IsEnabled())
+	assert.False(t, backend.IsDraining(), "declarative reload supersedes an ephemeral drain")
+	assert.True(t, backend.IsAlive())
+
+	require.NoError(t, pool.ReplaceBackends([]balancer.BackendSpec{{ID: "api", URL: "http://api:80", Disabled: true}}))
+	require.Same(t, backend, pool.GetBackends()[0])
+	assert.False(t, backend.IsEnabled())
+	assert.False(t, backend.IsDraining())
+	assert.False(t, backend.IsAlive())
+}
+
 func TestBackendPoolPublishesConcurrentHealthChangesConsistently(t *testing.T) {
 	specs := make([]balancer.BackendSpec, 64)
 	for index := range specs {
@@ -142,10 +162,43 @@ func TestBackendDrainStopsNewTrafficAndPreservesState(t *testing.T) {
 	assert.False(t, backend.IsAlive())
 	assert.True(t, backend.IsDraining())
 	assert.Equal(t, int64(1), backend.Inflight())
+	assert.False(t, backend.TryAcquire(), "drain must reject every new acquisition")
+	assert.Equal(t, int64(1), backend.Inflight(), "a rejected acquisition must be rolled back")
 	backend.Release()
 	backend.SetEnabled(true)
 	assert.True(t, backend.IsAlive())
 	assert.False(t, backend.IsDraining())
+}
+
+func TestConcurrentDrainNeverLeavesAnAcquisitionAfterDrain(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}, balancer.PassivePolicy{FailureThreshold: 2, Cooldown: time.Second, MaxConcurrentRequests: 8, SlowStartMinimum: 100})
+	require.NoError(t, err)
+	backend := pool.GetBackends()[0]
+	backend.SetAlive(true)
+
+	for range 1_000 {
+		backend.SetEnabled(true)
+		start := make(chan struct{})
+		acquired := make(chan bool, 1)
+		drained := make(chan struct{})
+		go func() {
+			<-start
+			acquired <- backend.TryAcquire()
+		}()
+		go func() {
+			<-start
+			pool.DrainBackend("api")
+			close(drained)
+		}()
+		close(start)
+		wasAcquired := <-acquired
+		<-drained
+		assert.False(t, backend.TryAcquire())
+		if wasAcquired {
+			backend.Release()
+		}
+		require.Equal(t, int64(0), backend.Inflight())
+	}
 }
 
 func TestBackendSlowStartProgressesToFullTraffic(t *testing.T) {

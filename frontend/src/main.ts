@@ -391,7 +391,7 @@ app.innerHTML = `
         <div class="architecture-intro">
           <p class="eyebrow"><span>02</span> Processing pipeline</p>
           <h2 id="architecture-title">Порядок обработки<br />запроса</h2>
-          <p>Публичный data plane не содержит административных обработчиков. Management API и метрики слушают отдельный адрес и требуют bearer token; изменяющие JSON-запросы дополнительно защищены заголовком <code>X-Balancer-CSRF</code>.</p>
+          <p>Публичный data plane не содержит административных обработчиков. Management API и метрики слушают отдельный адрес и требуют bearer token; изменяющие JSON-запросы дополнительно защищены заголовком <code>X-Balancer-CSRF</code>. Тестовый запрос панели собирается заново по whitelist, поэтому credential, cookies и служебные management-заголовки не попадают в backend.</p>
         </div>
 
         <div class="flow-steps">
@@ -411,7 +411,7 @@ app.innerHTML = `
             <div>
               <p class="kicker">Route</p>
               <h3>Round-robin</h3>
-              <p>Atomic-счётчик выбирает следующую доступную ноду из snapshot пула. Неуспешные active/passive health-check исключают backend без блокировки request path.</p>
+              <p>Atomic-счётчик выбирает следующую доступную ноду из snapshot пула. Неуспешные active/passive health-check исключают backend без блокировки request path. Новый пул при полном reload сначала прогревается и только затем атомарно заменяет текущий.</p>
             </div>
             <span class="step-result">next % alive</span>
           </article>

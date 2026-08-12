@@ -89,7 +89,24 @@ func (server *Server) handleStatus(writer http.ResponseWriter, request *http.Req
 func (server *Server) handleDashboardRequest(writer http.ResponseWriter, request *http.Request) {
 	proxyRequest := request.Clone(request.Context())
 	proxyRequest.URL.Path, proxyRequest.URL.RawPath = "/", ""
+	proxyRequest.URL.RawQuery = ""
+	proxyRequest.Header = dashboardUpstreamHeaders(request.Header)
+	proxyRequest.Body = http.NoBody
+	proxyRequest.GetBody = nil
+	proxyRequest.ContentLength = 0
+	proxyRequest.TransferEncoding = nil
+	proxyRequest.Trailer = nil
 	server.balancer.ServeHTTP(writer, proxyRequest)
+}
+
+func dashboardUpstreamHeaders(source http.Header) http.Header {
+	destination := make(http.Header)
+	for _, name := range []string{"Accept", "Accept-Language", "User-Agent", "X-Request-ID", "Traceparent", "Tracestate"} {
+		for _, value := range source.Values(name) {
+			destination.Add(name, value)
+		}
+	}
+	return destination
 }
 
 func (server *Server) handleBackendCount(writer http.ResponseWriter, request *http.Request) {

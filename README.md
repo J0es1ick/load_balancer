@@ -262,19 +262,21 @@ Secrets задаются через переменную `NAME` или mounted f
 
 ### Reload model
 
-`SIGHUP` перечитывает YAML, полностью валидирует новый объект и только затем применяет изменения.
+`SIGHUP` перечитывает YAML, полностью валидирует новый объект и только затем применяет изменения. Если новый список не сохраняет ни одного уже здорового backend-а, кандидатный пул сначала проходит health-check и публикуется одним атомарным переключением. Неуспешный прогрев отклоняет reload, поэтому старый пул продолжает обслуживать трафик без промежуточного окна `503`.
 
 ```powershell
 docker compose kill -s SIGHUP balancer
 ```
 
-Динамически изменяются backend list, health policy, slow start, retry policy/budget, rate policy и trusted proxies. Listener addresses, overload semaphore, HTTP timeouts, upstream connection limits и параметры подключения к storage требуют restart.
+Динамически изменяются backend list, `disabled`, health policy, slow start, retry policy/budget, rate policy и trusted proxies. Для совпавших `id + url` сохраняются health/counters, но декларативный `disabled` заменяет временное runtime-состояние и снимает незавершённый administrative drain. Listener addresses, overload semaphore, HTTP timeouts, upstream connection limits и параметры подключения к storage требуют restart.
 
 Runtime management API использует тот же validation/apply path, но не записывает YAML. Флаг `management.runtime_mutations` по умолчанию безопасно выключен, если поле отсутствует; локальный конфиг включает его явно.
 
 ## Management API
 
 Management listener не публикуется наружу в базовом Compose/Kubernetes шаблоне. Frontend nginx добавляет bearer credential server-side.
+
+`/api/dashboard/request` создаёт отдельный синтетический data-plane запрос по whitelist заголовков. `Authorization`, `Cookie`, `Proxy-Authorization`, `X-Balancer-CSRF` и любые прочие management-only заголовки не передаются backend-у.
 
 Изменяющие `/api/dashboard/*` запросы дополнительно требуют `Content-Type: application/json` и заголовок `X-Balancer-CSRF: 1`; запросы с `Sec-Fetch-Site: cross-site` отклоняются. Это не позволяет сторонней странице использовать автоматически добавляемый frontend nginx токен как ambient credential. Консольные клиенты должны передавать оба заголовка явно.
 
@@ -444,6 +446,7 @@ Production deployment должен использовать digest, а не из
 - Public и management listeners разделены.
 - Management credential отсутствует в image, YAML и Git; поддерживаются environment и mounted secret files.
 - Frontend добавляет credential на серверной стороне, поэтому токен не попадает в JS bundle.
+- Синтетический запрос интерактивной панели копирует в data plane только безопасный whitelist representation/tracing-заголовков; management credential и cookies остаются на management boundary.
 - Management mutations требуют JSON и отдельный CSRF-заголовок; cross-site browser requests отклоняются до выполнения handler-а.
 - Redis, management API и backends не публикуются на host в Compose.
 - Kubernetes console остаётся ClusterIP без публичного Ingress.
