@@ -1,6 +1,7 @@
 server:
   port: "8080"
   access_log_sample_rate: 0.01
+  access_log_include_path: false
   trusted_proxies:
     - "127.0.0.1/32"
     - "::1/128"

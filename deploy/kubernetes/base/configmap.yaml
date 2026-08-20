@@ -8,6 +8,7 @@ data:
     server:
       port: "8080"
       access_log_sample_rate: 0.01
+      access_log_include_path: false
       trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
       read_header_timeout: "5s"
       read_timeout: "30s"

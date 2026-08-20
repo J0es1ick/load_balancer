@@ -79,9 +79,16 @@ func (server *Server) instrument(listener string, next http.Handler) http.Handle
 			server.metrics.ObserveHTTPRequest(listener, recorder.status, duration)
 		}
 		if shouldLogAccess(listener, request.Method, recorder.status, server.accessLogSampleRate) {
-			slog.InfoContext(ctx, "HTTP request", "request_id", requestID, "listener", listener, "method", request.Method, "path", request.URL.Path, "status", recorder.status, "duration_ms", duration.Milliseconds(), "client_ip", server.clientIP(request))
+			slog.InfoContext(ctx, "HTTP request", "request_id", requestID, "listener", listener, "method", request.Method, "path", accessLogPath(request.URL.Path, server.accessLogIncludePath), "status", recorder.status, "duration_ms", duration.Milliseconds(), "client_ip", server.clientIP(request))
 		}
 	})
+}
+
+func accessLogPath(path string, include bool) string {
+	if !include {
+		return "[redacted]"
+	}
+	return path
 }
 
 func shouldLogAccess(listener, method string, status int, sampleRate float64) bool {

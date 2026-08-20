@@ -13,18 +13,19 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port                string         `yaml:"port"`
-	TrustedProxies      []string       `yaml:"trusted_proxies"`
-	AccessLogSampleRate float64        `yaml:"access_log_sample_rate"`
-	ReadHeaderTimeout   time.Duration  `yaml:"read_header_timeout"`
-	ReadTimeout         time.Duration  `yaml:"read_timeout"`
-	WriteTimeout        time.Duration  `yaml:"write_timeout"`
-	IdleTimeout         time.Duration  `yaml:"idle_timeout"`
-	ShutdownTimeout     time.Duration  `yaml:"shutdown_timeout"`
-	MaxHeaderBytes      int            `yaml:"max_header_bytes"`
-	Upstream            UpstreamConfig `yaml:"upstream"`
-	Retry               RetryConfig    `yaml:"retry"`
-	Overload            OverloadConfig `yaml:"overload"`
+	Port                 string         `yaml:"port"`
+	TrustedProxies       []string       `yaml:"trusted_proxies"`
+	AccessLogSampleRate  float64        `yaml:"access_log_sample_rate"`
+	AccessLogIncludePath bool           `yaml:"access_log_include_path"`
+	ReadHeaderTimeout    time.Duration  `yaml:"read_header_timeout"`
+	ReadTimeout          time.Duration  `yaml:"read_timeout"`
+	WriteTimeout         time.Duration  `yaml:"write_timeout"`
+	IdleTimeout          time.Duration  `yaml:"idle_timeout"`
+	ShutdownTimeout      time.Duration  `yaml:"shutdown_timeout"`
+	MaxHeaderBytes       int            `yaml:"max_header_bytes"`
+	Upstream             UpstreamConfig `yaml:"upstream"`
+	Retry                RetryConfig    `yaml:"retry"`
+	Overload             OverloadConfig `yaml:"overload"`
 }
 
 type UpstreamConfig struct {

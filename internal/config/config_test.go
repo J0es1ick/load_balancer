@@ -51,6 +51,7 @@ func TestLoadAppliesDefaultsAndAcceptsSameHostOnDifferentPorts(t *testing.T) {
 	assert.Equal(t, 1<<20, cfg.Server.MaxHeaderBytes)
 	assert.Equal(t, 2, cfg.Server.Retry.MaxAttempts)
 	assert.Equal(t, 64, cfg.RateLimit.LocalShards)
+	assert.False(t, cfg.Server.AccessLogIncludePath, "request paths must be redacted unless explicitly enabled")
 	assert.True(t, cfg.Backends[1].Disabled)
 }
 
@@ -79,6 +80,9 @@ func TestValidateReloadSeparatesDynamicAndImmutableSettings(t *testing.T) {
 	next.HealthCheck.Interval = 10 * time.Second
 	next.Server.TrustedProxies = []string{"10.0.0.0/8"}
 	assert.NoError(t, config.ValidateReload(current, next))
+	next.Server.AccessLogIncludePath = true
+	assert.Error(t, config.ValidateReload(current, next))
+	next.Server.AccessLogIncludePath = current.Server.AccessLogIncludePath
 	next.Server.Port = "9091"
 	assert.Error(t, config.ValidateReload(current, next))
 	next.Server.Port = current.Server.Port

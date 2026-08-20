@@ -13,3 +13,8 @@ func TestAccessLogPolicy(t *testing.T) {
 	assert.False(t, shouldLogAccess("public", http.MethodGet, http.StatusOK, 0), "sampling can disable successful request logs")
 	assert.True(t, shouldLogAccess("public", http.MethodGet, http.StatusOK, 1), "sample rate one must log every request")
 }
+
+func TestAccessLogPathIsRedactedByDefault(t *testing.T) {
+	assert.Equal(t, "[redacted]", accessLogPath("/password-reset/operator-token", false))
+	assert.Equal(t, "/users/42", accessLogPath("/users/42", true))
+}

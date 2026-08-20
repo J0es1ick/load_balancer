@@ -58,6 +58,7 @@ type Options struct {
 	EnablePprof            bool
 	TrustedProxies         []string
 	AccessLogSampleRate    float64
+	AccessLogIncludePath   bool
 	ReadHeaderTimeout      time.Duration
 	ReadTimeout            time.Duration
 	WriteTimeout           time.Duration
@@ -72,18 +73,19 @@ type Options struct {
 }
 
 type Server struct {
-	publicServer        *http.Server
-	managementServer    *http.Server
-	balancer            *balancer.LoadBalancer
-	limiter             *ratelimit.TokenBucketLimiter
-	metrics             *observability.Metrics
-	resolver            atomic.Pointer[clientIPResolver]
-	health              atomic.Pointer[balancer.HealthSettings]
-	applyRuntime        func(context.Context, RuntimeUpdate) error
-	runtimeMutations    bool
-	instanceID          string
-	overload            *overloadController
-	accessLogSampleRate float64
+	publicServer         *http.Server
+	managementServer     *http.Server
+	balancer             *balancer.LoadBalancer
+	limiter              *ratelimit.TokenBucketLimiter
+	metrics              *observability.Metrics
+	resolver             atomic.Pointer[clientIPResolver]
+	health               atomic.Pointer[balancer.HealthSettings]
+	applyRuntime         func(context.Context, RuntimeUpdate) error
+	runtimeMutations     bool
+	instanceID           string
+	overload             *overloadController
+	accessLogSampleRate  float64
+	accessLogIncludePath bool
 }
 
 func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ratelimit.TokenBucketLimiter) (*Server, error) {
@@ -122,7 +124,7 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 	if instanceID == "" {
 		instanceID = "local"
 	}
-	server := &Server{balancer: loadBalancer, limiter: limiter, metrics: options.Metrics, applyRuntime: options.ApplyRuntime, runtimeMutations: options.RuntimeMutations, instanceID: instanceID, accessLogSampleRate: options.AccessLogSampleRate}
+	server := &Server{balancer: loadBalancer, limiter: limiter, metrics: options.Metrics, applyRuntime: options.ApplyRuntime, runtimeMutations: options.RuntimeMutations, instanceID: instanceID, accessLogSampleRate: options.AccessLogSampleRate, accessLogIncludePath: options.AccessLogIncludePath}
 	server.overload = newOverloadController(options.OverloadMaxConcurrent, options.OverloadQueueTimeout, options.Metrics)
 	server.resolver.Store(resolver)
 	server.health.Store(cloneHealth(options.Health))
