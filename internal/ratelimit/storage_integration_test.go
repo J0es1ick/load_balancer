@@ -33,6 +33,18 @@ func TestRedisStoreConnectsLazilySoFailurePolicyCanHandleColdStart(t *testing.T)
 	assert.Error(t, store.Healthy(ctx))
 }
 
+func TestRedisLimiterAppliesFailurePoliciesAfterConnectionLoss(t *testing.T) {
+	address := os.Getenv("TEST_REDIS_ADDRESS")
+	if address == "" {
+		t.Skip("TEST_REDIS_ADDRESS is not set")
+	}
+	store, err := ratelimit.NewRedisStore(context.Background(), ratelimit.RedisOptions{Address: address, PoolSize: 4, DialTimeout: time.Second, ReadTimeout: time.Second, WriteTimeout: time.Second, Retention: time.Minute, Prefix: "failure-policy:" + time.Now().Format("150405.000000") + ":"})
+	require.NoError(t, err)
+	require.NoError(t, store.Healthy(context.Background()))
+	require.NoError(t, store.Close())
+	assertLimiterFailurePoliciesAfterConnectionLoss(t, store)
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	host := os.Getenv("TEST_POSTGRES_HOST")
 	if host == "" {
@@ -68,6 +80,46 @@ func TestPostgresMigrationsAreSerializedAcrossReplicas(t *testing.T) {
 	for err := range errors {
 		require.NoError(t, err)
 	}
+}
+
+func TestPostgresLimiterAppliesFailurePoliciesAfterConnectionLoss(t *testing.T) {
+	host := os.Getenv("TEST_POSTGRES_HOST")
+	if host == "" {
+		t.Skip("TEST_POSTGRES_HOST is not set")
+	}
+	store, err := ratelimit.NewPostgresStore(context.Background(), ratelimit.PostgresOptions{Host: host, Port: envOr("TEST_POSTGRES_PORT", "5432"), User: envOr("TEST_POSTGRES_USER", "postgres"), Password: os.Getenv("TEST_POSTGRES_PASSWORD"), Database: envOr("TEST_POSTGRES_DATABASE", "balancer"), SSLMode: "disable", ConnectTimeout: 5 * time.Second, MaxOpenConns: 4})
+	require.NoError(t, err)
+	require.NoError(t, store.Healthy(context.Background()))
+	require.NoError(t, store.Close())
+	assertLimiterFailurePoliciesAfterConnectionLoss(t, store)
+}
+
+func assertLimiterFailurePoliciesAfterConnectionLoss(t *testing.T, store ratelimit.Store) {
+	t.Helper()
+	settings := ratelimit.RuntimeSettings{Enabled: true, Policy: ratelimit.Policy{Capacity: 1, RefillPerSecond: 0.001}, FailureMode: "fail-closed", OperationTimeout: 100 * time.Millisecond}
+	limiter, err := ratelimit.NewTokenBucketLimiter(settings, store, ratelimit.NewLocalStore(4))
+	require.NoError(t, err)
+
+	_, err = limiter.AllowWithState(context.Background(), "connection-loss-client")
+	assert.Error(t, err, "fail-closed must reject when the configured store is unavailable")
+
+	settings.FailureMode = "fail-open"
+	require.NoError(t, limiter.Reconfigure(settings))
+	openDecision, err := limiter.AllowWithState(context.Background(), "connection-loss-client")
+	require.NoError(t, err)
+	assert.True(t, openDecision.Allowed)
+	assert.True(t, openDecision.Bucket.Degraded)
+
+	settings.FailureMode = "local-fallback"
+	require.NoError(t, limiter.Reconfigure(settings))
+	first, err := limiter.AllowWithState(context.Background(), "connection-loss-client")
+	require.NoError(t, err)
+	second, err := limiter.AllowWithState(context.Background(), "connection-loss-client")
+	require.NoError(t, err)
+	assert.True(t, first.Allowed)
+	assert.False(t, second.Allowed)
+	assert.True(t, first.Bucket.Degraded)
+	assert.True(t, second.Bucket.Degraded)
 }
 
 func assertConcurrentLimit(t *testing.T, store ratelimit.Store) {

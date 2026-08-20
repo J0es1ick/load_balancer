@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,6 +118,116 @@ func TestApplyReloadRejectsUnavailableReplacementWithoutPublishingIt(t *testing.
 	assert.ErrorContains(t, err, "backend replacement is not ready")
 	assert.Same(t, original, pool.GetBackends()[0])
 	assert.True(t, pool.Ready())
+}
+
+func TestApplyReloadServesParallelTrafficWhileReplacementWarms(t *testing.T) {
+	originalServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("original"))
+	}))
+	defer originalServer.Close()
+
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeOnce sync.Once
+	replacementServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/health" {
+			probeOnce.Do(func() { close(probeStarted) })
+			<-releaseProbe
+		}
+		_, _ = writer.Write([]byte("replacement"))
+	}))
+	defer replacementServer.Close()
+
+	current := reloadTestConfig()
+	current.Backends = []config.BackendConfig{{ID: "original", URL: originalServer.URL}}
+	next := cloneConfig(current)
+	next.Backends = []config.BackendConfig{{ID: "replacement", URL: replacementServer.URL}}
+	next.HealthCheck.Mode = "http"
+	next.HealthCheck.Path = "/health"
+	next.HealthCheck.Timeout = time.Second
+
+	pool, err := balancer.NewBackendPool(backendSpecs(current.Backends))
+	require.NoError(t, err)
+	pool.GetBackends()[0].SetAlive(true)
+	loadBalancer := balancer.NewLoadBalancer(pool, balancer.NewRoundRobinStrategy())
+	limiter, err := ratelimit.NewTokenBucketLimiter(limiterSettings(current.RateLimit), ratelimit.NewLocalStore(4), nil)
+	require.NoError(t, err)
+	healthChecker, err := balancer.NewHealthChecker(pool, healthSettings(current.HealthCheck))
+	require.NoError(t, err)
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- applyReload(context.Background(), current, next, pool, healthChecker, limiter, loadBalancer, nil)
+	}()
+	<-probeStarted
+
+	trafficContext, stopTraffic := context.WithCancel(context.Background())
+	var traffic sync.WaitGroup
+	var completed atomic.Int64
+	originalSeen := make(chan struct{})
+	replacementSeen := make(chan struct{})
+	var originalOnce sync.Once
+	var replacementOnce sync.Once
+	errors := make(chan string, 16)
+	for range 8 {
+		traffic.Add(1)
+		go func() {
+			defer traffic.Done()
+			for trafficContext.Err() == nil {
+				recorder := httptest.NewRecorder()
+				loadBalancer.ServeHTTP(recorder, httptest.NewRequestWithContext(trafficContext, http.MethodGet, "http://balancer.test/resource", nil))
+				if trafficContext.Err() != nil {
+					return
+				}
+				if recorder.Code != http.StatusOK {
+					select {
+					case errors <- recorder.Result().Status:
+					default:
+					}
+					return
+				}
+				body := recorder.Body.String()
+				switch body {
+				case "original":
+					originalOnce.Do(func() { close(originalSeen) })
+				case "replacement":
+					replacementOnce.Do(func() { close(replacementSeen) })
+				default:
+					select {
+					case errors <- body:
+					default:
+					}
+					return
+				}
+				completed.Add(1)
+			}
+		}()
+	}
+	defer func() {
+		stopTraffic()
+		traffic.Wait()
+	}()
+
+	select {
+	case <-originalSeen:
+	case <-time.After(time.Second):
+		t.Fatal("traffic did not reach the current pool during replacement warm-up")
+	}
+	close(releaseProbe)
+	require.NoError(t, <-reloadDone)
+	select {
+	case <-replacementSeen:
+	case <-time.After(time.Second):
+		t.Fatal("traffic did not reach the replacement pool after commit")
+	}
+	stopTraffic()
+	traffic.Wait()
+	close(errors)
+	for failure := range errors {
+		t.Errorf("request failed during reload: %s", failure)
+	}
+	assert.Greater(t, completed.Load(), int64(0))
+	assert.Equal(t, "replacement", pool.GetBackends()[0].ID())
 }
 
 func reloadTestConfig() *config.Config {
