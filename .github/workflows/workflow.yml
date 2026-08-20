@@ -108,6 +108,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Gitleaks scans the complete pushed commit range. A shallow clone can
+          # omit the parent of the first commit and turn a clean scan into an
+          # "ambiguous argument" infrastructure failure.
+          fetch-depth: 0
 
       - name: Secret scan
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
