@@ -60,4 +60,6 @@ Vite отправляет `/api` на `VITE_API_PROXY_TARGET`, по умолча
 
 В Kubernetes-шаблоне frontend развёртывается как внутренний ClusterIP без public Ingress, а `management.runtime_mutations` выключен. UI автоматически блокирует изменяющие controls и показывает ID закреплённой реплики. Persistent production-настройки выполняются через versioned ConfigMap и rolling deployment; панель остаётся диагностическим интерфейсом.
 
+Если live console публикуется вне административной сети, перед ней нужен identity-aware ingress/proxy с OIDC/SSO либо mTLS. Встроенный bearer token защищает соединение frontend → management API, но не идентифицирует человека, открывшего браузер.
+
 В demo mode поля меняют только браузерную модель. Поэтому опубликованный сайт остаётся полностью статическим и безопасным.

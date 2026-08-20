@@ -498,9 +498,9 @@ app.innerHTML = `
         </div>
         <div class="deployment-grid">
           <article><span>01 / Availability</span><h3>3–12 replicas</h3><p>Rolling update, probes, PDB и HPA. Console работает read-only; для PostgreSQL есть отдельный migration Job, а advisory lock защищает от параллельного запуска схемы.</p><code>deploy/kubernetes/base</code></article>
-          <article><span>02 / Edge</span><h3>TLS termination</h3><p>Публичный data plane проходит через Ingress или Caddy. Idle timeout допускает длительные SSE/WebSocket; management listener и консоль остаются во внутренней сети.</p><code>deploy/compose.edge.yml</code></article>
-          <article><span>03 / Observe</span><h3>Metrics + alerts</h3><p>Prometheus учитывает весь трафик без общего mutex на hot path. Успешные access-логи семплируются, ошибки пишутся всегда; видны health, p95, overload, retry budget и storage.</p><code>deploy/compose.observability.yml</code></article>
-          <article><span>04 / Supply chain</span><h3>Signed OCI images</h3><p>Release по тегу собирает multi-arch образы с SBOM/provenance, подписывает digest через Sigstore и публикует в GHCR.</p><code>.github/workflows/workflow.yml</code></article>
+          <article><span>02 / Edge</span><h3>TLS + access boundary</h3><p>Публичный data plane проходит через Ingress или Caddy. Management и console остаются внутри сети; при внешней публикации console перед ней обязателен OIDC/SSO или mTLS.</p><code>deploy/kubernetes/base</code></article>
+          <article><span>03 / Observe</span><h3>Metrics + alerts</h3><p>Prometheus учитывает весь трафик без общего mutex на hot path. Access-логи семплируются, URL path по умолчанию скрыт; видны health, p95, overload, retry budget и storage.</p><code>deploy/compose.observability.yml</code></article>
+          <article><span>04 / Supply chain</span><h3>Immutable images</h3><p>Сторонние образы закреплены по digest, security scan повторяется еженедельно. Release добавляет SBOM/provenance и подписывает digest через Sigstore.</p><code>.github/workflows/workflow.yml</code></article>
         </div>
       </section>
 
@@ -531,6 +531,7 @@ app.innerHTML = `
   ipv6_prefix_bits: <span class="code-number">64</span>
 
 <span class="code-key">server:</span>
+  access_log_include_path: <span class="code-value">false</span>
   write_timeout: <span class="code-value">"0s"</span>
   overload:
     max_concurrent_requests: <span class="code-number">2048</span>

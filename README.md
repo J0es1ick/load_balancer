@@ -220,6 +220,7 @@ GitHub Pages workflow всегда собирает `demo` и задаёт base 
 ```yaml
 server:
   access_log_sample_rate: 0.01 # доля успешных запросов; ошибки логируются всегда
+  access_log_include_path: false # path заменяется на [redacted], query не логируется никогда
   write_timeout: 0s # без общего deadline для streaming response
   upstream:
     max_concurrent_requests: 512
@@ -312,7 +313,7 @@ Management listener не публикуется наружу в базовом C
 
 Предустановленные alerts отслеживают отсутствие backend-ов, недоступность rate-limit storage, public 5xx ratio, p95 latency, overload/backend saturation и retry-budget exhaustion.
 
-Access log — JSON с `request_id`, listener, method, path, status, duration и client IP. Ошибки (`4xx/5xx`) и management mutations пишутся всегда; успешный трафик семплируется через `server.access_log_sample_rate` (`0` отключает, `1` пишет каждый запрос). Метрики учитывают все запросы независимо от sampling. Логи пишутся в stdout; production-платформа должна собирать их через Fluent Bit, Alloy, Vector или другой агент.
+Access log — JSON с `request_id`, listener, method, path, status, duration и client IP. Query string не логируется. По умолчанию `path` имеет значение `[redacted]`, чтобы URL с идентификатором или reset-токеном не становился частью журнала; полный path включается только явным `server.access_log_include_path: true` после проверки контрактов API. Ошибки (`4xx/5xx`) и management mutations пишутся всегда; успешный трафик семплируется через `server.access_log_sample_rate` (`0` отключает, `1` пишет каждый запрос). Метрики учитывают все запросы независимо от sampling. Логи пишутся в stdout; production-платформа должна собирать их через Fluent Bit, Alloy, Vector или другой агент.
 
 Счётчики и histogram hot path используют `sync.Map`, атомарные counters и короткую блокировку отдельной series вместо одного общего mutex. Scrape сначала получает snapshot и не удерживает request path во время записи медленному Prometheus-клиенту.
 
@@ -377,7 +378,7 @@ Base находится в `deploy/kubernetes/base`.
 
 Перед применением:
 
-1. Замените `OWNER/REPOSITORY` и tag в `kustomization.yaml`.
+1. Замените `OWNER/REPOSITORY` и нулевые digest-заглушки в `kustomization.yaml` на digest проверенных balancer/frontend images. Заглушки намеренно не позволяют случайно развернуть mutable tag.
 2. Замените backend, Redis/PostgreSQL addresses и trusted proxy ranges в `configmap.yaml`.
 3. Замените `balancer.example.com` и TLS secret в `ingress.yaml`.
 4. Создайте `balancer-secrets` через External Secrets/Sealed Secrets/Vault либо временно на основе `secret.example.yaml`.
@@ -397,7 +398,7 @@ Console намеренно не имеет public Ingress:
 kubectl -n load-balancer port-forward svc/balancer-console 3000:80
 ```
 
-Панель в этом режиме read-only. Она показывает одну закреплённую реплику и динамический список её backend-ов. Изменение `ConfigMap` выполняется через Git/CI или `kubectl apply`, после чего `rollout status` подтверждает обновление всех pod-ов.
+Панель в этом режиме read-only. Она показывает одну закреплённую реплику и динамический список её backend-ов. Изменение `ConfigMap` выполняется через Git/CI или `kubectl apply`, после чего `rollout status` подтверждает обновление всех pod-ов. Если console всё же публикуется за пределы административной сети, запрос обязан сначала пройти identity-aware proxy/ingress с OIDC/SSO либо mTLS. Нельзя направлять публичный Ingress прямо на `balancer-console`: bearer token между frontend и management API аутентифицирует сервис, а не оператора.
 
 Для Prometheus Operator отдельно примените `deploy/kubernetes/optional/servicemonitor.yaml` и обеспечьте доступ его namespace через NetworkPolicy.
 
@@ -411,13 +412,17 @@ Deployment использует `maxUnavailable: 0`, `maxSurge: 1`, startup/read
 
 ```bash
 kubectl -n load-balancer set image deployment/balancer balancer=IMAGE@sha256:DIGEST
+kubectl -n load-balancer set image deployment/balancer-console frontend=FRONTEND_IMAGE@sha256:FRONTEND_DIGEST
 kubectl -n load-balancer rollout status deployment/balancer --timeout=10m
+kubectl -n load-balancer rollout status deployment/balancer-console --timeout=10m
 kubectl -n load-balancer rollout undo deployment/balancer
 ```
 
 До promotion выполните smoke profile, проверьте alerts, p95/p99, 5xx ratio, retry budget и store health. Конфигурация должна быть versioned вместе с image digest.
 
 ## CI/CD и supply chain
+
+Workflow выполняется для pull request, push/tag и вручную, а каждый понедельник повторяет security/quality/deployment-smoke на текущем `master`, даже если новых коммитов не было. Pages deploy ограничен push/manual запуском и не повторяется из-за scheduled scan.
 
 Workflow выполняет:
 
@@ -439,7 +444,7 @@ cosign verify \
   ghcr.io/OWNER/REPOSITORY-balancer@sha256:DIGEST
 ```
 
-Production deployment должен использовать digest, а не изменяемый tag.
+Production deployment должен использовать digest, а не изменяемый tag. Сторонние build/runtime, Compose, service-container и k6 images в репозитории также записаны как читаемый tag плюс `@sha256`; tag объясняет версию человеку, digest делает получаемые байты неизменяемыми. Security-update меняет и tag, и digest одним reviewable commit.
 
 ## Security model
 
@@ -450,10 +455,12 @@ Production deployment должен использовать digest, а не из
 - Management mutations требуют JSON и отдельный CSRF-заголовок; cross-site browser requests отклоняются до выполнения handler-а.
 - Redis, management API и backends не публикуются на host в Compose.
 - Kubernetes console остаётся ClusterIP без публичного Ingress.
+- Публичная console требует отдельной identity-аутентификации оператора (OIDC/SSO или mTLS); management bearer token не считается пользовательской сессией.
 - Containers используют non-root user, read-only root filesystem, dropped capabilities и `no-new-privileges`/seccomp.
 - Client IP headers доверяются только явно заданным proxy ranges; перед upstream входные forwarding headers удаляются и создаются заново из проверенного адреса.
 - TLS завершается внешним ingress/Caddy; upstream HTTPS требует нормальную CA chain.
 - CI сканирует secrets, Go/npm dependencies и runtime image.
+- Еженедельный scheduled run обнаруживает новые advisory для уже выпущенного кода; исправление по-прежнему проходит review и выпускается новым digest.
 
 Для реального production дополнительно нужны namespace/RBAC policy, external secret manager с rotation, registry retention, audit storage, firewall/WAF по модели угроз и регулярная проверка restore/rollback.
 
@@ -501,7 +508,7 @@ npm run build:live
 npm run build:demo
 ```
 
-Integration tests используют `TEST_REDIS_ADDRESS`, `TEST_POSTGRES_HOST` и `TEST_POSTGRES_PASSWORD`; без этих переменных они пропускаются локально, но выполняются в CI с реальными service containers.
+Integration tests используют `TEST_REDIS_ADDRESS`, `TEST_POSTGRES_HOST` и `TEST_POSTGRES_PASSWORD`; без этих переменных они пропускаются локально, но выполняются в CI с реальными service containers. Кроме атомарности bucket-а они закрывают потерю уже установленного соединения с Redis/PostgreSQL и проверяют `fail-closed`, `fail-open` и `local-fallback`. Reload-тест одновременно отправляет запросы через data plane, пока новый pool прогревается, и отклоняет любое окно `502/503`.
 
 ## Структура репозитория
 

@@ -53,6 +53,7 @@ metadata:
   name: balancer-console
   namespace: load-balancer
 spec:
+  type: ClusterIP
   selector: { app.kubernetes.io/name: balancer-console }
   sessionAffinity: ClientIP
   sessionAffinityConfig:
