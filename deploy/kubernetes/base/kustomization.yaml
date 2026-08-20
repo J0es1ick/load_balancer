@@ -11,7 +11,7 @@ resources:
 images:
   - name: ghcr.io/owner/cloud-test-assignment-balancer
     newName: ghcr.io/OWNER/REPOSITORY-balancer
-    newTag: v0.1.0
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   - name: ghcr.io/owner/cloud-test-assignment-frontend
     newName: ghcr.io/OWNER/REPOSITORY-frontend
-    newTag: v0.1.0
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

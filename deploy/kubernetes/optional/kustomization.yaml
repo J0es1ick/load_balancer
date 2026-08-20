@@ -3,3 +3,7 @@ kind: Kustomization
 resources:
   - servicemonitor.yaml
   - postgres-migration-job.yaml
+images:
+  - name: ghcr.io/OWNER/REPOSITORY-balancer
+    newName: ghcr.io/OWNER/REPOSITORY-balancer
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

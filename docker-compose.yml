@@ -1,5 +1,5 @@
 x-backend-service: &backend-service
-  image: nginx:1.28.3-alpine3.23
+  image: nginx:1.28.3-alpine3.23@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
   healthcheck:
     test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
     interval: 5s
@@ -63,7 +63,7 @@ services:
     networks: ["app"]
 
   redis:
-    image: redis:8.8.1-alpine3.23
+    image: redis:8.8.1-alpine3.23@sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis_data:/data
