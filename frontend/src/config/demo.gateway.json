@@ -1,0 +1,141 @@
+{
+  "apiVersion": "proxy/v1",
+  "history_limit": 10,
+  "listeners": [
+    { "id": "http", "address": ":8080", "protocol": "http1", "default": true }
+  ],
+  "routes": [
+    {
+      "id": "canary",
+      "listener": "http",
+      "priority": 30,
+      "match": { "path_prefix": "/canary/" },
+      "action": {
+        "weighted_clusters": [
+          { "cluster": "primary", "weight": 90 },
+          { "cluster": "canary", "weight": 10 }
+        ],
+        "rewrite_prefix": "/"
+      },
+      "max_request_body_bytes": 10485760
+    },
+    {
+      "id": "api",
+      "listener": "http",
+      "priority": 20,
+      "match": { "path_prefix": "/api/" },
+      "action": { "cluster": "primary", "rewrite_prefix": "/" },
+      "max_request_body_bytes": 10485760
+    },
+    {
+      "id": "default",
+      "listener": "http",
+      "priority": 0,
+      "match": { "path_prefix": "/" },
+      "action": { "cluster": "primary" },
+      "max_request_body_bytes": 10485760
+    }
+  ],
+  "clusters": [
+    {
+      "id": "primary",
+      "strategy": "round_robin",
+      "endpoints": [
+        { "id": "backend-1", "url": "http://backend1:80", "weight": 1 },
+        { "id": "backend-2", "url": "http://backend2:80", "weight": 1 },
+        { "id": "backend-3", "url": "http://backend3:80", "weight": 1, "disabled": true },
+        { "id": "backend-4", "url": "http://backend4:80", "weight": 1, "disabled": true },
+        { "id": "backend-5", "url": "http://backend5:80", "weight": 1, "disabled": true },
+        { "id": "backend-6", "url": "http://backend6:80", "weight": 1, "disabled": true },
+        { "id": "backend-7", "url": "http://backend7:80", "weight": 1, "disabled": true },
+        { "id": "backend-8", "url": "http://backend8:80", "weight": 1, "disabled": true }
+      ],
+      "health": {
+        "enabled": true,
+        "mode": "http",
+        "path": "/",
+        "interval": "5s",
+        "timeout": "2s",
+        "failure_threshold": 2,
+        "success_threshold": 1,
+        "max_concurrency": 16,
+        "jitter": "500ms",
+        "cooldown": "10s",
+        "expected_statuses": [200, 204],
+        "slow_start": "30s",
+        "slow_start_minimum_percent": 10
+      },
+      "retry": {
+        "max_attempts": 2,
+        "per_try_timeout": "5s",
+        "body_limit": 1048576,
+        "methods": ["GET", "HEAD", "OPTIONS"],
+        "statuses": [502, 503, 504],
+        "budget_capacity": 100,
+        "budget_refill_per_second": 10
+      },
+      "transport": {
+        "protocol": "auto",
+        "dial_timeout": "2s",
+        "tls_handshake_timeout": "3s",
+        "response_header_timeout": "10s",
+        "expect_continue_timeout": "1s",
+        "idle_conn_timeout": "90s",
+        "max_idle_conns": 256,
+        "max_idle_conns_per_host": 64,
+        "max_conns_per_host": 0,
+        "max_concurrent_requests": 512,
+        "max_response_header_bytes": 1048576
+      },
+      "tls": { "enabled": false },
+      "discovery": { "type": "static" }
+    },
+    {
+      "id": "canary",
+      "strategy": "round_robin",
+      "endpoints": [
+        { "id": "canary-1", "url": "http://backend7:80", "weight": 1 },
+        { "id": "canary-2", "url": "http://backend8:80", "weight": 1 }
+      ],
+      "health": {
+        "enabled": true,
+        "mode": "http",
+        "path": "/",
+        "interval": "5s",
+        "timeout": "2s",
+        "failure_threshold": 2,
+        "success_threshold": 1,
+        "max_concurrency": 16,
+        "jitter": "500ms",
+        "cooldown": "10s",
+        "expected_statuses": [200, 204],
+        "slow_start": "30s",
+        "slow_start_minimum_percent": 10
+      },
+      "retry": {
+        "max_attempts": 2,
+        "per_try_timeout": "5s",
+        "body_limit": 1048576,
+        "methods": ["GET", "HEAD", "OPTIONS"],
+        "statuses": [502, 503, 504],
+        "budget_capacity": 100,
+        "budget_refill_per_second": 10
+      },
+      "transport": {
+        "protocol": "auto",
+        "dial_timeout": "2s",
+        "tls_handshake_timeout": "3s",
+        "response_header_timeout": "10s",
+        "expect_continue_timeout": "1s",
+        "idle_conn_timeout": "90s",
+        "max_idle_conns": 256,
+        "max_idle_conns_per_host": 64,
+        "max_conns_per_host": 0,
+        "max_concurrent_requests": 512,
+        "max_response_header_bytes": 1048576
+      },
+      "tls": { "enabled": false },
+      "discovery": { "type": "static" }
+    }
+  ]
+}

@@ -4,3 +4,53 @@ if [ -n "${BALANCER_ADMIN_TOKEN_FILE:-}" ]; then
     BALANCER_ADMIN_TOKEN="$(cat "${BALANCER_ADMIN_TOKEN_FILE}")"
     export BALANCER_ADMIN_TOKEN
 fi
+
+BALANCER_MANAGEMENT_SCHEME="http"
+tls_include="/etc/nginx/conf.d/management-upstream-tls.inc"
+: > "${tls_include}"
+
+safe_path() {
+    case "$1" in
+        ""|*[!A-Za-z0-9_./-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+safe_server_name() {
+    case "$1" in
+        ""|*[!A-Za-z0-9.-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+if [ "${BALANCER_MANAGEMENT_TLS_ENABLED:-false}" = "true" ]; then
+    tls_ca="${BALANCER_MANAGEMENT_TLS_CA_FILE:-/var/run/secrets/balancer-management/ca.crt}"
+    tls_cert="${BALANCER_MANAGEMENT_TLS_CERT_FILE:-/var/run/secrets/balancer-management/tls.crt}"
+    tls_key="${BALANCER_MANAGEMENT_TLS_KEY_FILE:-/var/run/secrets/balancer-management/tls.key}"
+    tls_server_name="${BALANCER_MANAGEMENT_TLS_SERVER_NAME:-balancer}"
+
+    for tls_path in "${tls_ca}" "${tls_cert}" "${tls_key}"; do
+        if ! safe_path "${tls_path}" || [ ! -r "${tls_path}" ]; then
+            echo "management mTLS file is missing, unreadable, or has an unsafe path" >&2
+            exit 1
+        fi
+    done
+    if ! safe_server_name "${tls_server_name}"; then
+        echo "BALANCER_MANAGEMENT_TLS_SERVER_NAME is invalid" >&2
+        exit 1
+    fi
+
+    BALANCER_MANAGEMENT_SCHEME="https"
+    {
+        printf 'proxy_ssl_certificate "%s";\n' "${tls_cert}"
+        printf 'proxy_ssl_certificate_key "%s";\n' "${tls_key}"
+        printf 'proxy_ssl_trusted_certificate "%s";\n' "${tls_ca}"
+        printf 'proxy_ssl_verify on;\n'
+        printf 'proxy_ssl_verify_depth 3;\n'
+        printf 'proxy_ssl_server_name on;\n'
+        printf 'proxy_ssl_name "%s";\n' "${tls_server_name}"
+        printf 'proxy_ssl_protocols TLSv1.2 TLSv1.3;\n'
+    } > "${tls_include}"
+fi
+
+export BALANCER_MANAGEMENT_SCHEME

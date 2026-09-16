@@ -1,65 +1,101 @@
-# Interactive documentation SPA
+# Proxy Console
 
-Один TypeScript/Vite интерфейс собирается в двух режимах.
+TypeScript/Vite SPA для `proxy/v1`. Один интерфейс работает через два адаптера:
 
-## Demo — GitHub Pages
+- `demo` — статическая документация и детерминированный browser simulator, без сетевых запросов;
+- `live` — консоль запущенного Go proxy через защищённый management API `/api/v1`.
 
-`demo` не обращается к API. Round-robin, token bucket, выбираемый пул из 1–8 backend-ов, runtime-настройки, retry budget и ответы `429`/`503` воспроизводятся локально в браузере. Это не мониторинг запущенного сервера, а автономная интерактивная документация.
+Разделы интерфейса соответствуют runtime-модели: Overview, Request lab, Routes, Clusters, Config и Guide. Dashboard не является источником production-конфигурации: при `runtime_mutations_enabled=false` изменяющие controls блокируются.
+
+## Команды
 
 ```bash
 npm ci
 npm run dev:demo
-npm run build:demo
-npm run preview:demo
-```
-
-При push в `master` workflow собирает этот режим с `VITE_BASE_PATH=/${repository-name}/` и публикует `dist` через GitHub Pages. В репозитории один раз выберите **Settings → Pages → Source → GitHub Actions**.
-
-## Live — локальная интеграция
-
-`live` читает защищённый `/api/dashboard/status`, динамически строит список backend-ов, отправляет тестовые запросы через настоящий limiter/proxy и показывает circuit/inflight/slow-start state. Селектор «Активных backend» вызывает `POST /api/dashboard/backends` и включает первые N нод реального локального пула. Compose содержит 8 nginx upstream-ов, из которых по умолчанию включены первые два. При разрешённых runtime mutations интерфейс также включает, исключает и drain'ит отдельные backend-ы и применяет настройки.
-
-Рекомендуемый запуск всего проекта:
-
-```bash
-./scripts/init-local.sh
-docker compose up --build
-```
-
-Откройте `http://127.0.0.1:3000`. Nginx внутри frontend-контейнера проксирует `/api/` на management listener и добавляет bearer token сервер-сервер; credential не попадает в JavaScript. При тестовом `/api/dashboard/request` Go-сервер создаёт новый upstream-запрос по whitelist, поэтому этот токен, cookies и CSRF-заголовок не уходят backend-у.
-
-Изменяющие запросы SPA отправляют `Content-Type: application/json` и `X-Balancer-CSRF: 1`. Management API отклоняет cross-site и простые form-запросы, поэтому сторонний сайт не может воспользоваться токеном, который nginx добавляет автоматически.
-
-Адрес data plane, который интерфейс показывает и копирует в live-режиме, задаётся build-переменной `VITE_PUBLIC_URL`. Корневой Compose передаёт её автоматически из `.env`, созданного `scripts/init-local.*`.
-
-Для отдельного Vite dev-server:
-
-```bash
-# frontend/.env.live.local — файл игнорируется Git
-VITE_MANAGEMENT_TOKEN=то-же-значение-что-BALANCER_ADMIN_TOKEN
-
 npm run dev:live
+npm run build:demo
+npm run build:live
+npm run test:simulator
 ```
 
-Vite отправляет `/api` на `VITE_API_PROXY_TARGET`, по умолчанию `http://127.0.0.1:9090`.
+GitHub Pages собирает `demo` с `VITE_BASE_PATH=/<repository>/`. Этот build не содержит management token и не обращается к приватному API.
+
+Для локального Vite live-server создайте игнорируемый `.env.live.local`:
+
+```dotenv
+BALANCER_ADMIN_TOKEN_FILE=/absolute/path/to/local/admin-token
+# либо BALANCER_ADMIN_TOKEN=local-development-token
+```
+
+Vite проксирует `/api` на `VITE_API_PROXY_TARGET`. В контейнере frontend nginx добавляет bearer token server-side, поэтому credential не попадает в JavaScript.
+
+## Adapter contract
+
+Live adapter использует:
+
+| Method | Path | Назначение |
+| --- | --- | --- |
+| `GET` | `/api/v1/status` | runtime snapshot и counters |
+| `GET` | `/api/v1/config` | текущий `GatewayConfig` |
+| `POST` | `/api/v1/config/validate` | проверка `{config}` без apply |
+| `PUT` | `/api/v1/config` | атомарный apply `{config, expected_revision}` |
+| `POST` | `/api/v1/config/rollback` | rollback с optimistic revision |
+| `PATCH` | `/api/v1/clusters/{cluster}/endpoints/{id}` | enable/disable/drain endpoint |
+| `POST` | `/api/v1/request` | синтетический запрос через data plane |
+| `PATCH` | `/api/v1/rate-limit` | admin-only runtime override global token bucket |
+| `POST` | `/api/v1/rate-limit/reset` | admin-only reset bucket текущего verified client |
+
+Изменяющие запросы отправляют `Content-Type: application/json` и `X-Balancer-CSRF: 1`.
+
+Console следует ролям из `status.principal` и не подменяет серверную авторизацию:
+
+| Роль | Доступные действия |
+| --- | --- |
+| `viewer` | чтение status/config, локальное редактирование и pure validation |
+| `operator` | всё viewer + Request lab и lifecycle endpoint-ов |
+| `admin` | всё operator + apply/rollback конфигурации и смена стратегии |
+
+`runtime_mutations_enabled=false` дополнительно блокирует runtime-операции для любой роли. Runtime rate-limit override относится только к текущему instance, не меняет `GatewayConfig` и не переживает restart; в multi-replica deployment его нужно применять через automation ко всем экземплярам. Сервер обязан повторно проверять роль каждого запроса: disabled control в браузере — только UX, не граница безопасности.
+
+Demo adapter реализует тот же контракт в памяти: host/path/method/header matching, priority, redirects, route rate limit, round-robin и другие заявленные стратегии, endpoint lifecycle, validation, optimistic revisions и rollback. Хранение demo config в `localStorage` включается пользователем в разделе Config и по умолчанию выключено.
+
+## Browser rendering regression
+
+После `npm run dev:demo` откройте `http://localhost:5173/tests/rendering.html` и нажмите **Run rendering tests**. Fixture использует настоящие `ProxyConsole` и `DemoAdapter`: запускает 25 RPS и проверяет, что incremental render не заменяет DOM controls, не сбрасывает раскрытый `details`, focus/selection/scroll редактора, не теряет endpoint click и действительно останавливает traffic counters. Адаптер запускается без Storage, поэтому fixture не читает и не изменяет сохранённую demo-конфигурацию пользователя. Эта Vite test route не входит в production build entrypoint.
 
 ## Environment
 
 | Переменная | Использование |
 | --- | --- |
-| `VITE_APP_MODE=demo\|live` | Выбор автономной модели или Go API |
-| `VITE_BASE_PATH` | `/` локально, `/<repo>/` на project Pages |
-| `VITE_API_PROXY_TARGET` | Только dev proxy в live mode |
-| `VITE_MANAGEMENT_TOKEN` | Только локальный dev proxy; запрещено задавать в Pages build |
+| `VITE_APP_MODE=demo\|live` | Выбор adapter-а во время сборки |
+| `VITE_BASE_PATH` | Base URL для GitHub Pages или корня домена |
+| `VITE_API_PROXY_TARGET` | Target только для Vite dev proxy |
+| `BALANCER_ADMIN_TOKEN[_FILE]` | Server-only token локального dev proxy; `_FILE` перечитывается для каждого запроса |
+| `VITE_PUBLIC_URL` | Публичный адрес data plane, передаваемый Docker build |
 
-`npm run dev` и `npm run build` остаются алиасами live-режима.
+## Frontend nginx → management mTLS
 
-## Что меняет Runtime form
+Без дополнительной настройки nginx обращается к `http://balancer:9090`. Для защищённого upstream включите:
 
-В live mode `PATCH /api/dashboard/config` обновляет capacity/refill/failure mode, health interval/timeout/thresholds/slow start и retry attempts/timeout/budget. Изменения находятся в памяти процесса до рестарта либо следующего `SIGHUP`. Форма не меняет YAML и не управляет secrets, listeners, global overload semaphore или storage connections.
+```dotenv
+BALANCER_MANAGEMENT_TLS_ENABLED=true
+BALANCER_MANAGEMENT_TLS_CA_FILE=/var/run/secrets/balancer-management/ca.crt
+BALANCER_MANAGEMENT_TLS_CERT_FILE=/var/run/secrets/balancer-management/tls.crt
+BALANCER_MANAGEMENT_TLS_KEY_FILE=/var/run/secrets/balancer-management/tls.key
+BALANCER_MANAGEMENT_TLS_SERVER_NAME=balancer
+```
 
-В Kubernetes-шаблоне frontend развёртывается как внутренний ClusterIP без public Ingress, а `management.runtime_mutations` выключен. UI автоматически блокирует изменяющие controls и показывает ID закреплённой реплики. Persistent production-настройки выполняются через versioned ConfigMap и rolling deployment; панель остаётся диагностическим интерфейсом.
+Entrypoint проверяет hostname, безопасные пути и доступность всех файлов, затем включает HTTPS, client certificate, CA verification, SNI и TLS 1.2/1.3. При неполной конфигурации контейнер завершается, а не откатывается к незашифрованному соединению.
 
-Если live console публикуется вне административной сети, перед ней нужен identity-aware ingress/proxy с OIDC/SSO либо mTLS. Встроенный bearer token защищает соединение frontend → management API, но не идентифицирует человека, открывшего браузер.
+## Структура
 
-В demo mode поля меняют только браузерную модель. Поэтому опубликованный сайт остаётся полностью статическим и безопасным.
+```text
+src/
+  adapters/     demo/live adapters и simulator tests
+  config/       стартовый proxy/v1 snapshot
+  styles/       base, layout, components, responsive
+  ui/           shell, HTML helpers, topology geometry
+  views/        отдельный модуль каждого раздела
+  app.ts        состояние и orchestration
+  types.ts      JSON contract management API
+```

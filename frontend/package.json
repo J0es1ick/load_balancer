@@ -8,8 +8,10 @@
     "dev:live": "vite --configLoader runner --mode live --host 0.0.0.0",
     "dev:demo": "vite --configLoader runner --mode demo --host 0.0.0.0",
     "build": "npm run build:live",
-    "build:live": "tsc && vite build --configLoader runner --mode live",
-    "build:demo": "tsc && vite build --configLoader runner --mode demo",
+    "build:live": "tsc && vite build --configLoader runner --mode live && node scripts/assert-build-mode.mjs live",
+    "build:demo": "tsc && vite build --configLoader runner --mode demo && node scripts/assert-build-mode.mjs demo",
+    "test": "npm run test:simulator",
+    "test:simulator": "tsc -p tsconfig.test.json && node .test-dist/adapters/simulator.spec.js",
     "preview": "npm run preview:live",
     "preview:live": "vite preview --configLoader runner --mode live",
     "preview:demo": "vite preview --configLoader runner --mode demo"

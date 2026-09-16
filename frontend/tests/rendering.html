@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proxy Console rendering regression</title>
+    <style>
+      .test-runner {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 1000;
+        width: min(390px, calc(100vw - 24px));
+        max-height: calc(100vh - 24px);
+        overflow: auto;
+        padding: 16px;
+        border: 1px solid rgba(213, 255, 64, 0.55);
+        border-radius: 12px;
+        color: #f5f6f0;
+        background: rgba(12, 13, 11, 0.97);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+        font: 13px/1.45 Inter, system-ui, sans-serif;
+      }
+
+      .test-runner h1,
+      .test-runner h2,
+      .test-runner p {
+        margin: 0;
+      }
+
+      .test-runner h1 {
+        font-size: 17px;
+      }
+
+      .test-runner h2 {
+        margin-top: 14px;
+        font-size: 13px;
+      }
+
+      .test-runner p {
+        margin-top: 6px;
+        color: #bfc3b7;
+      }
+
+      .test-runner button {
+        width: 100%;
+        min-height: 40px;
+        margin-top: 12px;
+        border: 0;
+        border-radius: 8px;
+        color: #0c0d0b;
+        background: #d5ff40;
+        font-weight: 800;
+      }
+
+      .test-runner button:disabled {
+        cursor: progress;
+        opacity: 0.7;
+      }
+
+      .test-results {
+        margin: 8px 0 0;
+        padding-left: 22px;
+      }
+
+      .test-results li {
+        margin-top: 7px;
+      }
+
+      .test-results li[data-result="pass"] {
+        color: #d5ff40;
+      }
+
+      .test-results li[data-result="fail"] {
+        color: #ff8276;
+      }
+
+      .test-results small {
+        display: block;
+        color: #bfc3b7;
+      }
+    </style>
+  </head>
+  <body>
+    <aside class="test-runner" aria-label="Rendering regression runner">
+      <h1>Rendering regression</h1>
+      <p id="test-status" role="status" aria-live="polite">Ready. The fixture uses the real console and demo adapter.</p>
+      <button id="run-tests" type="button">Run rendering tests</button>
+      <h2 id="test-summary">Results: not run</h2>
+      <ol id="test-results" class="test-results" aria-labelledby="test-summary"></ol>
+    </aside>
+    <div id="app"></div>
+    <script type="module" src="./rendering.ts"></script>
+  </body>
+</html>

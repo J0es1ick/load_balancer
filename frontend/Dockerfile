@@ -3,6 +3,7 @@ FROM node:22.23.1-alpine3.23@sha256:8516dce0483394d5708d4b2ee6cacb79fb1d617ea4e2
 WORKDIR /app
 ARG VITE_PUBLIC_URL=http://localhost:8080/
 ENV VITE_PUBLIC_URL=${VITE_PUBLIC_URL}
+ENV VITE_APP_MODE=live
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
