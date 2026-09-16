@@ -1,7 +1,7 @@
 x-backend-service: &backend-service
-  image: nginx:1.28.3-alpine3.23@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+  image: nginx:1.30.4-alpine3.24-slim@sha256:77da26c31397bf6694b4bf93275f5b40b0b120ba1b8f114264b603e592c561d6
   healthcheck:
-    test: ["CMD-SHELL", "curl -f http://127.0.0.1/ || exit 1"]
+    test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
     interval: 5s
     timeout: 2s
     retries: 10

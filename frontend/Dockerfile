@@ -9,7 +9,7 @@ RUN npm ci
 COPY . .
 RUN npm run build:live
 
-FROM nginx:1.28.3-alpine3.23@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+FROM nginx:1.30.4-alpine3.24-slim@sha256:77da26c31397bf6694b4bf93275f5b40b0b120ba1b8f114264b603e592c561d6
 
 RUN mkdir -p /etc/nginx/templates \
     && rm -f /etc/nginx/conf.d/default.conf \
