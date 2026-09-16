@@ -6,13 +6,13 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/component: management
+      app.kubernetes.io/component: metrics
   endpoints:
-    - port: management
+    - port: metrics
       path: /metrics
       interval: 15s
       authorization:
         type: Bearer
         credentials:
           name: balancer-secrets
-          key: admin-token
+          key: metrics-token

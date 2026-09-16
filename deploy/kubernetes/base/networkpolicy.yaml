@@ -36,10 +36,24 @@ spec:
     - from:
         - podSelector:
             matchLabels: { app.kubernetes.io/name: balancer-console }
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics
+  namespace: load-balancer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: balancer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
         - namespaceSelector:
             matchLabels: { observability: "true" }
       ports:
-        - { protocol: TCP, port: 9090 }
+        - { protocol: TCP, port: 9091 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

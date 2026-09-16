@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-public
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public
+spec:
+  type: {{ .Values.service.public.type }}
+  selector:
+    {{- include "go-load-balancer.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: http, port: {{ .Values.service.public.port }}, targetPort: public, protocol: TCP }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-management
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  selector:
+    {{- include "go-load-balancer.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: management, port: {{ .Values.service.management.port }}, targetPort: management, protocol: TCP }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-metrics
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "go-load-balancer.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: metrics, port: {{ .Values.service.metrics.port }}, targetPort: metrics, protocol: TCP }
+{{- if .Values.discovery.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-discovery-targets
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: discovery-targets
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "go-load-balancer.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: management, port: {{ .Values.service.management.port }}, targetPort: management, protocol: TCP }
+{{- end }}

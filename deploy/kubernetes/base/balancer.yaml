@@ -6,6 +6,9 @@ metadata:
   labels: { app.kubernetes.io/name: balancer }
 spec:
   replicas: 3
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  minReadySeconds: 5
   strategy:
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector:
@@ -16,6 +19,25 @@ spec:
     spec:
       terminationGracePeriodSeconds: 45
       automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: balancer }
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: balancer }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app.kubernetes.io/name: balancer }
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -28,23 +50,17 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: CONFIG_PATH, value: /config/config.yaml }
-            - name: BALANCER_ADMIN_TOKEN
-              valueFrom:
-                { secretKeyRef: { name: balancer-secrets, key: admin-token } }
-            - name: REDIS_PASSWORD
-              valueFrom:
-                {
-                  secretKeyRef: { name: balancer-secrets, key: redis-password },
-                }
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                {
-                  secretKeyRef:
-                    { name: balancer-secrets, key: postgres-password },
-                }
+            - { name: BALANCER_VIEWER_TOKEN_FILE, value: /var/run/secrets/balancer/viewer-token }
+            - { name: BALANCER_OPERATOR_TOKEN_FILE, value: /var/run/secrets/balancer/operator-token }
+            - { name: BALANCER_ADMIN_TOKEN_FILE, value: /var/run/secrets/balancer/admin-token }
+            - { name: BALANCER_DISCOVERY_TOKEN_FILE, value: /var/run/secrets/balancer/discovery-token }
+            - { name: BALANCER_METRICS_TOKEN_FILE, value: /var/run/secrets/balancer/metrics-token }
+            - { name: REDIS_PASSWORD_FILE, value: /var/run/secrets/balancer/redis-password }
+            - { name: POSTGRES_PASSWORD_FILE, value: /var/run/secrets/balancer/postgres-password }
           ports:
             - { name: public, containerPort: 8080 }
             - { name: management, containerPort: 9090 }
+            - { name: metrics, containerPort: 9091 }
           readinessProbe:
             httpGet: { path: /readyz, port: public }
             periodSeconds: 5
@@ -71,10 +87,13 @@ spec:
             readOnlyRootFilesystem: true
           volumeMounts:
             - { name: config, mountPath: /config, readOnly: true }
+            - { name: credentials, mountPath: /var/run/secrets/balancer, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: config
           configMap: { name: balancer-config }
+        - name: credentials
+          secret: { secretName: balancer-secrets }
         - name: tmp
           emptyDir: { sizeLimit: 32Mi }
 ---
@@ -106,3 +125,18 @@ spec:
     clientIP: { timeoutSeconds: 10800 }
   ports:
     - { name: management, port: 9090, targetPort: management }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: balancer-metrics
+  namespace: load-balancer
+  labels:
+    {
+      app.kubernetes.io/name: balancer,
+      app.kubernetes.io/component: metrics,
+    }
+spec:
+  selector: { app.kubernetes.io/name: balancer }
+  ports:
+    - { name: metrics, port: 9091, targetPort: metrics }

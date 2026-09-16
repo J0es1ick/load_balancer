@@ -1,0 +1,91 @@
+{{- if .Values.console.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-console
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "go-load-balancer.consoleSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "go-load-balancer.consoleSelectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: frontend
+          image: {{ include "go-load-balancer.image" .Values.console.image | quote }}
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          env:
+            - name: BALANCER_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.keys.viewer }}
+            {{- if .Values.managementTLS.enabled }}
+            - { name: BALANCER_MANAGEMENT_TLS_ENABLED, value: "true" }
+            - { name: BALANCER_MANAGEMENT_TLS_CA_FILE, value: /var/run/secrets/balancer-management/ca.crt }
+            - { name: BALANCER_MANAGEMENT_TLS_CERT_FILE, value: /var/run/secrets/balancer-management/tls.crt }
+            - { name: BALANCER_MANAGEMENT_TLS_KEY_FILE, value: /var/run/secrets/balancer-management/tls.key }
+            - name: BALANCER_MANAGEMENT_TLS_SERVER_NAME
+              value: {{ default (printf "%s-management.%s.svc" (include "go-load-balancer.fullname" .) .Release.Namespace) .Values.managementTLS.consoleServerName | quote }}
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.console.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: nginx-conf, mountPath: /etc/nginx/conf.d }
+            - { name: nginx-cache, mountPath: /var/cache/nginx }
+            - { name: nginx-run, mountPath: /var/run }
+            {{- if .Values.managementTLS.enabled }}
+            - { name: management-client-tls, mountPath: /var/run/secrets/balancer-management, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: nginx-conf, emptyDir: { sizeLimit: 8Mi } }
+        - { name: nginx-cache, emptyDir: { sizeLimit: 32Mi } }
+        - { name: nginx-run, emptyDir: { sizeLimit: 8Mi } }
+        {{- if .Values.managementTLS.enabled }}
+        - name: management-client-tls
+          secret:
+            secretName: {{ required "managementTLS.consoleClientSecret is required when console and management TLS are enabled" .Values.managementTLS.consoleClientSecret }}
+            items:
+              - { key: {{ .Values.managementTLS.consoleClientCertKey }}, path: tls.crt }
+              - { key: {{ .Values.managementTLS.consoleClientPrivateKeyKey }}, path: tls.key }
+              - { key: {{ .Values.managementTLS.consoleClientCAKey }}, path: ca.crt }
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-console
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  selector:
+    {{- include "go-load-balancer.consoleSelectorLabels" . | nindent 4 }}
+  ports:
+    - { name: http, port: {{ .Values.console.service.port }}, targetPort: http, protocol: TCP }
+{{- end }}

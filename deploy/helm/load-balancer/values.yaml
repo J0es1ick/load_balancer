@@ -1,0 +1,304 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/OWNER/REPOSITORY-balancer
+  tag: v0.1.0
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+auth:
+  existingSecret: balancer-secrets
+  keys:
+    viewer: viewer-token
+    operator: operator-token
+    admin: admin-token
+    discovery: discovery-token
+    metrics: metrics-token
+    redisPassword: redis-password
+    postgresPassword: postgres-password
+
+managementTLS:
+  enabled: false
+  existingSecret: ""
+  certKey: tls.crt
+  privateKeyKey: tls.key
+  caKey: ca.crt
+  requireClientCert: true
+  discoveryClientSecret: ""
+  discoveryClientCertKey: tls.crt
+  discoveryClientPrivateKeyKey: tls.key
+  discoveryClientCAKey: ca.crt
+  consoleClientSecret: ""
+  consoleClientCertKey: tls.crt
+  consoleClientPrivateKeyKey: tls.key
+  consoleClientCAKey: ca.crt
+  consoleServerName: ""
+
+config:
+  server:
+    port: "8080"
+    access_log_sample_rate: 0.01
+    access_log_include_path: false
+    trusted_proxies: []
+    read_header_timeout: 5s
+    read_timeout: 30s
+    write_timeout: 0s
+    idle_timeout: 60s
+    shutdown_timeout: 35s
+    max_header_bytes: 1048576
+    upstream:
+      dial_timeout: 2s
+      tls_handshake_timeout: 3s
+      response_header_timeout: 10s
+      expect_continue_timeout: 1s
+      idle_conn_timeout: 90s
+      max_idle_conns: 1024
+      max_idle_conns_per_host: 128
+      max_conns_per_host: 512
+      max_concurrent_requests: 512
+    retry:
+      max_attempts: 2
+      per_try_timeout: 5s
+      body_limit: 1048576
+      methods: [GET, HEAD, OPTIONS]
+      statuses: [502, 503, 504]
+      budget_capacity: 200
+      budget_refill_per_second: 20
+    overload:
+      max_concurrent_requests: 4096
+      queue_timeout: 50ms
+  management:
+    enabled: true
+    address: ":9090"
+    metrics_address: ":9091"
+    credentials:
+      - name: console
+        role: viewer
+        token_env: BALANCER_VIEWER_TOKEN
+      - name: operator
+        role: operator
+        token_env: BALANCER_OPERATOR_TOKEN
+      - name: administrator
+        role: admin
+        token_env: BALANCER_ADMIN_TOKEN
+      - name: endpoint-discovery
+        role: discovery
+        token_env: BALANCER_DISCOVERY_TOKEN
+    metrics_auth_token_env: BALANCER_METRICS_TOKEN
+    allow_insecure: false
+    enable_pprof: false
+    runtime_mutations: false
+    write_timeout: 30s
+  telemetry:
+    service_name: go-load-balancer
+    sample_rate: 0
+    insecure: false
+  redis:
+    address: redis.example.internal:6379
+    password_env: REDIS_PASSWORD
+    database: 0
+    pool_size: 128
+    dial_timeout: 2s
+    read_timeout: 100ms
+    write_timeout: 100ms
+  database:
+    host: postgres.example.internal
+    port: "5432"
+    user: balancer
+    password_env: POSTGRES_PASSWORD
+    name: balancer
+    sslmode: verify-full
+    connect_timeout: 5s
+    max_open_connections: 50
+  gateway:
+    apiVersion: proxy/v1
+    history_limit: 10
+    listeners:
+      - id: public
+        address: ":8080"
+        protocol: http1
+        default: true
+    routes:
+      - id: api
+        listener: public
+        match: { path_prefix: / }
+        action: { cluster: api, preserve_host: true }
+    clusters:
+      - id: api
+        strategy: round_robin
+        discovery: { type: static }
+        endpoints:
+          - { id: api-a, url: "http://api-a.application.svc.cluster.local:8080", weight: 1 }
+          - { id: api-b, url: "http://api-b.application.svc.cluster.local:8080", weight: 1 }
+  rate_limit:
+    enabled: true
+    storage: redis
+    failure_mode: local-fallback
+    capacity: 1000
+    refill_per_second: 100
+    operation_timeout: 100ms
+    local_shards: 128
+    local_max_buckets: 200000
+    ipv4_prefix_bits: 32
+    ipv6_prefix_bits: 64
+    cleanup_interval: 6h
+    retention: 24h
+  health_check:
+    mode: http
+    path: /healthz
+    interval: 5s
+    timeout: 2s
+    failure_threshold: 2
+    success_threshold: 2
+    max_concurrency: 32
+    jitter: 500ms
+    cooldown: 15s
+    slow_start: 30s
+    slow_start_minimum_percent: 10
+    expected_statuses: [200, 204]
+
+service:
+  public:
+    type: ClusterIP
+    port: 80
+  management:
+    port: 9090
+  metrics:
+    port: 9091
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: balancer.example.com
+  path: /
+  tls:
+    enabled: true
+    secretName: balancer-public-tls
+
+console:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/OWNER/REPOSITORY-frontend
+    tag: v0.1.0
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+  service:
+    port: 80
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    host: console.balancer.example.com
+    tls:
+      enabled: true
+      secretName: balancer-console-tls
+    identityProxy:
+      enabled: false
+      authURL: ""
+      authSignin: ""
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
+
+resources:
+  requests: { cpu: 100m, memory: 64Mi }
+  limits: { cpu: "2", memory: 512Mi }
+
+terminationGracePeriodSeconds: 45
+preStopDelaySeconds: 5
+
+probes:
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  startup:
+    periodSeconds: 2
+    failureThreshold: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  cpuAverageUtilization: 65
+  additionalMetrics: []
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 60 }
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Percent, value: 25, periodSeconds: 60 }
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+podAntiAffinity:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespaceSelector:
+    matchLabels: { networking.k8s.io/ingress-controller: "true" }
+  observabilityNamespaceSelector:
+    matchLabels: { observability: "true" }
+  managementClientNamespaceSelector:
+    matchLabels: { access-to-balancer-management: "true" }
+  consoleClientNamespaceSelector:
+    matchLabels: { access-to-balancer-console: "true" }
+  egress:
+    enabled: false
+    dns:
+      namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: kube-system }
+      podSelector:
+        matchLabels: { k8s-app: kube-dns }
+    rules: []
+    discoveryRules: []
+
+discovery:
+  enabled: false
+  replicaCount: 1
+  allowPlaintext: false
+  targets: ""
+  resolveTargets: true
+  refreshInterval: 5s
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
+  kubernetes:
+    clusterWide: false
+    watchNamespaces: []
+
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 15s
+  additionalLabels: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

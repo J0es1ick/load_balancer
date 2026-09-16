@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: balancer-discovery-targets
+  namespace: load-balancer
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app.kubernetes.io/name: balancer }
+  ports:
+    - { name: management, port: 9090, targetPort: management }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: balancer-discovery
+  namespace: load-balancer
+  labels:
+    {
+      app.kubernetes.io/name: balancer-discovery,
+      app.kubernetes.io/component: discovery,
+    }
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {
+        app.kubernetes.io/name: balancer-discovery,
+        app.kubernetes.io/component: discovery,
+      }
+  template:
+    metadata:
+      labels:
+        {
+          app.kubernetes.io/name: balancer-discovery,
+          app.kubernetes.io/component: discovery,
+        }
+    spec:
+      serviceAccountName: balancer-discovery
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: discovery
+          image: ghcr.io/owner/cloud-test-assignment-balancer:v0.1.0
+          args: ["discover", "-config", "/config/config.yaml"]
+          env:
+            - { name: DISCOVERY_TARGETS, value: "http://balancer-discovery-targets:9090" }
+            - { name: DISCOVERY_RESOLVE_TARGETS, value: "true" }
+            - { name: DISCOVERY_REFRESH_INTERVAL, value: "5s" }
+            - { name: DISCOVERY_ALLOW_PLAINTEXT, value: "true" }
+            - { name: BALANCER_DISCOVERY_TOKEN_FILE, value: /var/run/secrets/balancer/discovery-token }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: credentials, mountPath: /var/run/secrets/balancer, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: balancer-config }
+        - name: credentials
+          secret: { secretName: balancer-secrets }
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-discovery-management
+  namespace: load-balancer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: balancer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {
+                app.kubernetes.io/name: balancer-discovery,
+                app.kubernetes.io/component: discovery,
+              }
+      ports:
+        - { protocol: TCP, port: 9090 }

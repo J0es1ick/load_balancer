@@ -1,0 +1,142 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $kubernetesDiscovery := false -}}
+{{- range $cluster := (dig "gateway" "clusters" (list) .Values.config) -}}
+{{- if eq (dig "discovery" "type" "static" $cluster) "kubernetes" -}}
+{{- $kubernetesDiscovery = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.discovery.enabled .Values.networkPolicy.egress.enabled $kubernetesDiscovery (eq (len .Values.networkPolicy.egress.discoveryRules) 0) -}}
+{{- fail "networkPolicy.egress.discoveryRules must allow the Kubernetes API when EndpointSlice discovery and egress isolation are enabled" -}}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-data-plane
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "go-load-balancer.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if .Values.networkPolicy.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressControllerNamespaceSelector | nindent 12 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "go-load-balancer.consoleSelectorLabels" . | nindent 14 }}
+        {{- if .Values.discovery.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "go-load-balancer.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: discovery
+        {{- end }}
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.managementClientNamespaceSelector | nindent 12 }}
+      ports:
+        - { protocol: TCP, port: 9090 }
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.observabilityNamespaceSelector | nindent 12 }}
+      ports:
+        - { protocol: TCP, port: 9091 }
+  {{- if .Values.networkPolicy.egress.enabled }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 12 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- with .Values.networkPolicy.egress.rules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- if .Values.console.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-console
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "go-load-balancer.consoleSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if .Values.networkPolicy.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.consoleClientNamespaceSelector | nindent 12 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+  {{- if .Values.networkPolicy.egress.enabled }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 12 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "go-load-balancer.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9090 }
+{{- end }}
+{{- end }}
+{{- if and .Values.discovery.enabled .Values.networkPolicy.egress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-discovery
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "go-load-balancer.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: discovery
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 12 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "go-load-balancer.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9090 }
+    {{- with .Values.networkPolicy.egress.discoveryRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

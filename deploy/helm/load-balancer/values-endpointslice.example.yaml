@@ -1,0 +1,28 @@
+managementTLS:
+  enabled: true
+  existingSecret: balancer-management-server-tls
+  requireClientCert: true
+  discoveryClientSecret: balancer-discovery-client-tls
+  consoleClientSecret: balancer-console-client-tls
+
+discovery:
+  enabled: true
+  allowPlaintext: false
+  kubernetes:
+    clusterWide: false
+    watchNamespaces: [application]
+
+config:
+  gateway:
+    clusters:
+      - id: api
+        strategy: round_robin
+        discovery:
+          type: kubernetes
+          namespace: application
+          service: api
+          scheme: http
+          port: 8080
+          refresh_interval: 5s
+          stale_after: 2m
+        endpoints: []

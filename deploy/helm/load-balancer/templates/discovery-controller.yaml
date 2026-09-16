@@ -1,0 +1,84 @@
+{{- if .Values.discovery.enabled }}
+{{- $defaultPlaintext := and (eq .Values.discovery.targets "") (not .Values.managementTLS.enabled) -}}
+{{- $explicitPlaintext := contains "http://" .Values.discovery.targets -}}
+{{- if and (or $defaultPlaintext $explicitPlaintext) (not .Values.discovery.allowPlaintext) -}}
+{{- fail "discovery delivery uses HTTP; enable managementTLS or explicitly set discovery.allowPlaintext=true for an isolated development network" -}}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-discovery
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: discovery
+spec:
+  replicas: {{ .Values.discovery.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "go-load-balancer.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: discovery
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: {{ include "go-load-balancer.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: discovery
+    spec:
+      serviceAccountName: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: discovery
+          image: {{ include "go-load-balancer.image" .Values.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["discover", "-config", "/config/config.yaml"]
+          env:
+            - name: DISCOVERY_TARGETS
+              value: {{ default (printf "%s://%s-discovery-targets.%s.svc:%v" (ternary "https" "http" .Values.managementTLS.enabled) (include "go-load-balancer.fullname" .) .Release.Namespace .Values.service.management.port) .Values.discovery.targets | quote }}
+            - { name: DISCOVERY_RESOLVE_TARGETS, value: {{ .Values.discovery.resolveTargets | quote }} }
+            - { name: DISCOVERY_REFRESH_INTERVAL, value: {{ .Values.discovery.refreshInterval | quote }} }
+            - { name: DISCOVERY_ALLOW_PLAINTEXT, value: {{ .Values.discovery.allowPlaintext | quote }} }
+            - { name: BALANCER_DISCOVERY_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.discovery }} }
+            {{- if .Values.managementTLS.enabled }}
+            - { name: DISCOVERY_CA_FILE, value: /var/run/secrets/discovery-mtls/ca.crt }
+            - { name: DISCOVERY_CLIENT_CERT_FILE, value: /var/run/secrets/discovery-mtls/tls.crt }
+            - { name: DISCOVERY_CLIENT_KEY_FILE, value: /var/run/secrets/discovery-mtls/tls.key }
+            {{- end }}
+          resources:
+            {{- toYaml .Values.discovery.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: credentials, mountPath: /var/run/secrets/balancer-auth, readOnly: true }
+            {{- if .Values.managementTLS.enabled }}
+            - { name: discovery-mtls, mountPath: /var/run/secrets/discovery-mtls, readOnly: true }
+            {{- end }}
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: {{ include "go-load-balancer.fullname" . }}-config }
+        - name: credentials
+          secret: { secretName: {{ .Values.auth.existingSecret }} }
+        {{- if .Values.managementTLS.enabled }}
+        - name: discovery-mtls
+          secret:
+            secretName: {{ required "managementTLS.discoveryClientSecret is required for the discovery controller when mTLS is enabled" .Values.managementTLS.discoveryClientSecret }}
+            items:
+              - { key: {{ .Values.managementTLS.discoveryClientCertKey }}, path: tls.crt }
+              - { key: {{ .Values.managementTLS.discoveryClientPrivateKeyKey }}, path: tls.key }
+              - { key: {{ .Values.managementTLS.discoveryClientCAKey }}, path: ca.crt }
+        {{- end }}
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }
+{{- end }}

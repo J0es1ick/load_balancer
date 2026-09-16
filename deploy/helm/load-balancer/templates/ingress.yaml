@@ -1,0 +1,63 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-public
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "go-load-balancer.fullname" . }}-public
+                port: { name: http }
+{{- end }}
+{{- if and .Values.console.enabled .Values.console.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}-console
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+  annotations:
+    {{- with .Values.console.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.console.ingress.identityProxy.enabled }}
+    nginx.ingress.kubernetes.io/auth-url: {{ required "console.ingress.identityProxy.authURL is required" .Values.console.ingress.identityProxy.authURL | quote }}
+    nginx.ingress.kubernetes.io/auth-signin: {{ required "console.ingress.identityProxy.authSignin is required" .Values.console.ingress.identityProxy.authSignin | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.console.ingress.className }}
+  {{- if .Values.console.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.console.ingress.host | quote }}]
+      secretName: {{ .Values.console.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.console.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "go-load-balancer.fullname" . }}-console
+                port: { name: http }
+{{- end }}

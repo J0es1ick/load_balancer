@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: balancer
     app.kubernetes.io/component: migration
   annotations:
-    description: Apply this Job before the Deployment when rate_limit.storage is postgres
+    description: Apply and wait for this Job before a PostgreSQL-backed rollout
 spec:
   backoffLimit: 3
   activeDeadlineSeconds: 300
@@ -26,17 +26,14 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: migrate
-          image: ghcr.io/OWNER/REPOSITORY-balancer:v0.1.0
+          image: ghcr.io/owner/cloud-test-assignment-balancer:v0.1.0
           imagePullPolicy: IfNotPresent
           env:
             - { name: CONFIG_PATH, value: /config/config.yaml }
             - { name: MIGRATE_ONLY, value: "true" }
             - name: POSTGRES_PASSWORD
               valueFrom:
-                {
-                  secretKeyRef:
-                    { name: balancer-secrets, key: postgres-password },
-                }
+                secretKeyRef: { name: balancer-secrets, key: postgres-password }
           resources:
             requests: { cpu: 25m, memory: 32Mi }
             limits: { cpu: 250m, memory: 128Mi }
@@ -49,6 +46,6 @@ spec:
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: config
-          configMap: { name: balancer-config }
+          configMap: { name: balancer-migration-config }
         - name: tmp
           emptyDir: { sizeLimit: 16Mi }

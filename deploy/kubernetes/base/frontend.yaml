@@ -25,7 +25,7 @@ spec:
           env:
             - name: BALANCER_ADMIN_TOKEN
               valueFrom:
-                { secretKeyRef: { name: balancer-secrets, key: admin-token } }
+                { secretKeyRef: { name: balancer-secrets, key: viewer-token } }
           ports:
             - { name: http, containerPort: 8080 }
           readinessProbe:

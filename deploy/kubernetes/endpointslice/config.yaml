@@ -1,0 +1,98 @@
+server:
+  port: "8080"
+  access_log_sample_rate: 0.01
+  access_log_include_path: false
+  trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+  read_header_timeout: 5s
+  read_timeout: 30s
+  write_timeout: 0s
+  idle_timeout: 60s
+  shutdown_timeout: 35s
+  max_header_bytes: 1048576
+  upstream:
+    max_idle_conns: 1024
+    max_idle_conns_per_host: 128
+    max_conns_per_host: 512
+    max_concurrent_requests: 512
+  retry:
+    max_attempts: 2
+    per_try_timeout: 5s
+    budget_capacity: 200
+    budget_refill_per_second: 20
+  overload:
+    max_concurrent_requests: 4096
+    queue_timeout: 50ms
+
+management:
+  enabled: true
+  address: ":9090"
+  metrics_address: ":9091"
+  credentials:
+    - { name: console, role: viewer, token_env: BALANCER_VIEWER_TOKEN }
+    - { name: operator, role: operator, token_env: BALANCER_OPERATOR_TOKEN }
+    - { name: administrator, role: admin, token_env: BALANCER_ADMIN_TOKEN }
+    - { name: endpoint-discovery, role: discovery, token_env: BALANCER_DISCOVERY_TOKEN }
+  metrics_auth_token_env: BALANCER_METRICS_TOKEN
+  allow_insecure: false
+  enable_pprof: false
+  runtime_mutations: false
+  write_timeout: 30s
+
+telemetry:
+  service_name: go-load-balancer
+  sample_rate: 0
+  insecure: false
+
+gateway:
+  apiVersion: proxy/v1
+  history_limit: 10
+  listeners:
+    - id: public
+      address: ":8080"
+      protocol: http1
+      default: true
+  routes:
+    - id: api
+      listener: public
+      match: { path_prefix: / }
+      action: { cluster: api, preserve_host: true }
+  clusters:
+    - id: api
+      strategy: round_robin
+      discovery:
+        type: kubernetes
+        namespace: application
+        service: api
+        scheme: http
+        port: 8080
+        refresh_interval: 5s
+        stale_after: 2m
+      endpoints: []
+
+rate_limit:
+  enabled: false
+  storage: local
+  failure_mode: fail-open
+  capacity: 1000
+  refill_per_second: 100
+  operation_timeout: 100ms
+  local_shards: 128
+  local_max_buckets: 200000
+  ipv4_prefix_bits: 32
+  ipv6_prefix_bits: 64
+  cleanup_interval: 6h
+  retention: 24h
+
+health_check:
+  mode: http
+  path: /healthz
+  interval: 5s
+  timeout: 2s
+  failure_threshold: 2
+  success_threshold: 2
+  max_concurrency: 32
+  jitter: 500ms
+  cooldown: 15s
+  slow_start: 30s
+  slow_start_minimum_percent: 10
+  expected_statuses: [200, 204]

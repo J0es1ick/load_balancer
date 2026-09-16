@@ -1,0 +1,74 @@
+{{- if .Values.discovery.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+automountServiceAccountToken: true
+{{- if .Values.discovery.kubernetes.clusterWide }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "go-load-balancer.discoveryServiceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- $root := . -}}
+{{- $namespaces := .Values.discovery.kubernetes.watchNamespaces -}}
+{{- if eq (len $namespaces) 0 -}}
+{{- $namespaces = list .Release.Namespace -}}
+{{- end -}}
+{{- range $namespace := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "go-load-balancer.discoveryServiceAccount" $root }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "go-load-balancer.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "go-load-balancer.discoveryServiceAccount" $root }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "go-load-balancer.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "go-load-balancer.discoveryServiceAccount" $root }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "go-load-balancer.discoveryServiceAccount" $root }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}

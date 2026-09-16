@@ -1,0 +1,9 @@
+The data-plane Service is:
+  {{ include "go-load-balancer.fullname" . }}-public.{{ .Release.Namespace }}.svc
+
+The console is read-only and has no public Ingress by default. Access it with:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "go-load-balancer.fullname" . }}-console 3000:{{ .Values.console.service.port }}
+
+Before sending production traffic, replace the image tags with immutable digests,
+create {{ .Values.auth.existingSecret }} outside Helm, and run the documented
+off-cluster smoke/load/soak/recovery profiles against the target environment.

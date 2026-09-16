@@ -1,0 +1,33 @@
+server:
+  port: "8080"
+
+management:
+  enabled: false
+
+database:
+  host: "postgres.example.internal"
+  port: "5432"
+  user: "balancer"
+  password_env: "POSTGRES_PASSWORD"
+  name: "balancer"
+  sslmode: "verify-full"
+  connect_timeout: "5s"
+  max_open_connections: 5
+
+backends:
+  - id: "migration-placeholder"
+    url: "http://127.0.0.1:1"
+
+rate_limit:
+  enabled: true
+  storage: "postgres"
+  failure_mode: "fail-closed"
+  capacity: 1
+  refill_per_second: 1
+  operation_timeout: "5s"
+  local_shards: 1
+  local_max_buckets: 1
+  ipv4_prefix_bits: 32
+  ipv6_prefix_bits: 64
+  cleanup_interval: "24h"
+  retention: "24h"

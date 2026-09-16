@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "go-load-balancer.fullname" . }}
+  labels:
+    {{- include "go-load-balancer.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "go-load-balancer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "go-load-balancer.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - maxSkew: {{ .maxSkew }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "go-load-balancer.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+      {{- end }}
+      {{- if or .Values.podAntiAffinity.enabled .Values.affinity }}
+      affinity:
+        {{- if .Values.podAntiAffinity.enabled }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "go-load-balancer.selectorLabels" . | nindent 20 }}
+        {{- end }}
+        {{- with .Values.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: balancer
+          image: {{ include "go-load-balancer.image" .Values.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - { name: CONFIG_PATH, value: /config/config.yaml }
+            - { name: BALANCER_VIEWER_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.viewer }} }
+            - { name: BALANCER_OPERATOR_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.operator }} }
+            - { name: BALANCER_ADMIN_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.admin }} }
+            - { name: BALANCER_DISCOVERY_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.discovery }} }
+            - { name: BALANCER_METRICS_TOKEN_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.metrics }} }
+            - { name: REDIS_PASSWORD_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.redisPassword }} }
+            - { name: POSTGRES_PASSWORD_FILE, value: /var/run/secrets/balancer-auth/{{ .Values.auth.keys.postgresPassword }} }
+            {{- if .Values.discovery.enabled }}
+            - { name: DISCOVERY_MODE, value: external }
+            {{- end }}
+          ports:
+            - { name: public, containerPort: 8080, protocol: TCP }
+            - { name: management, containerPort: 9090, protocol: TCP }
+            - { name: metrics, containerPort: 9091, protocol: TCP }
+          readinessProbe:
+            httpGet: { path: /readyz, port: public }
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: public }
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          startupProbe:
+            httpGet: { path: /healthz, port: public }
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.preStopDelaySeconds }}"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: credentials, mountPath: /var/run/secrets/balancer-auth, readOnly: true }
+            {{- if .Values.managementTLS.enabled }}
+            - { name: management-tls, mountPath: /var/run/secrets/balancer-tls, readOnly: true }
+            {{- end }}
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: {{ include "go-load-balancer.fullname" . }}-config }
+        - name: credentials
+          secret: { secretName: {{ .Values.auth.existingSecret }} }
+        {{- if .Values.managementTLS.enabled }}
+        - name: management-tls
+          secret:
+            secretName: {{ required "managementTLS.existingSecret is required when management TLS is enabled" .Values.managementTLS.existingSecret }}
+            items:
+              - { key: {{ .Values.managementTLS.certKey }}, path: tls.crt }
+              - { key: {{ .Values.managementTLS.privateKeyKey }}, path: tls.key }
+              - { key: {{ .Values.managementTLS.caKey }}, path: ca.crt }
+        {{- end }}
+        - name: tmp
+          emptyDir: { sizeLimit: 32Mi }
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
