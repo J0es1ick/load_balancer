@@ -25,15 +25,16 @@ type dashboardStatus struct {
 }
 
 type rateLimitStatus struct {
-	Enabled          bool    `json:"enabled"`
-	Capacity         int     `json:"capacity"`
-	RefillPerSecond  float64 `json:"refill_per_second"`
-	FailureMode      string  `json:"failure_mode"`
-	OperationTimeout string  `json:"operation_timeout"`
-	IPv4PrefixBits   int     `json:"ipv4_prefix_bits"`
-	IPv6PrefixBits   int     `json:"ipv6_prefix_bits"`
-	LocalBuckets     int64   `json:"local_buckets"`
-	LocalEvictions   uint64  `json:"local_evictions"`
+	Remaining        *float64 `json:"remaining,omitempty"`
+	Enabled          bool     `json:"enabled"`
+	Capacity         int      `json:"capacity"`
+	RefillPerSecond  float64  `json:"refill_per_second"`
+	FailureMode      string   `json:"failure_mode"`
+	OperationTimeout string   `json:"operation_timeout"`
+	IPv4PrefixBits   int      `json:"ipv4_prefix_bits"`
+	IPv6PrefixBits   int      `json:"ipv6_prefix_bits"`
+	LocalBuckets     int64    `json:"local_buckets"`
+	LocalEvictions   uint64   `json:"local_evictions"`
 }
 
 type healthStatus struct {
@@ -65,6 +66,10 @@ type protectionStatus struct {
 }
 
 func (server *Server) handleStatus(writer http.ResponseWriter, request *http.Request) {
+	if server.gateway != nil {
+		server.handleGatewayStatus(writer, request)
+		return
+	}
 	clientIP := server.clientIP(request)
 	bucket, err := server.limiter.Snapshot(request.Context(), clientIP)
 	if err != nil {
@@ -87,6 +92,10 @@ func (server *Server) handleStatus(writer http.ResponseWriter, request *http.Req
 }
 
 func (server *Server) handleDashboardRequest(writer http.ResponseWriter, request *http.Request) {
+	if server.gateway != nil {
+		writeJSON(writer, http.StatusGone, map[string]string{"error": "use POST /api/v1/request"})
+		return
+	}
 	proxyRequest := request.Clone(request.Context())
 	proxyRequest.URL.Path, proxyRequest.URL.RawPath = "/", ""
 	proxyRequest.URL.RawQuery = ""
@@ -96,7 +105,11 @@ func (server *Server) handleDashboardRequest(writer http.ResponseWriter, request
 	proxyRequest.ContentLength = 0
 	proxyRequest.TransferEncoding = nil
 	proxyRequest.Trailer = nil
-	server.balancer.ServeHTTP(writer, proxyRequest)
+	if server.gateway != nil {
+		server.gateway.ServeHTTP(writer, proxyRequest)
+	} else {
+		server.balancer.ServeHTTP(writer, proxyRequest)
+	}
 }
 
 func dashboardUpstreamHeaders(source http.Header) http.Header {
@@ -120,7 +133,21 @@ func (server *Server) handleBackendCount(writer http.ResponseWriter, request *ht
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if !server.balancer.SetActiveBackendCount(payload.Count) {
+	updated := false
+	if server.gateway != nil {
+		status := server.gateway.Status()
+		if len(status.Clusters) > 0 && payload.Count > 0 && payload.Count <= len(status.Clusters[0].Endpoints) {
+			updated = true
+			for index, endpoint := range status.Clusters[0].Endpoints {
+				if err := server.gateway.SetEndpoint(status.Clusters[0].ID, endpoint.ID, index < payload.Count); err != nil {
+					updated = false
+				}
+			}
+		}
+	} else {
+		updated = server.balancer.SetActiveBackendCount(payload.Count)
+	}
+	if !updated {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "count must be between 1 and the configured backend count"})
 		return
 	}
@@ -129,6 +156,10 @@ func (server *Server) handleBackendCount(writer http.ResponseWriter, request *ht
 }
 
 func (server *Server) handleBackendState(writer http.ResponseWriter, request *http.Request) {
+	if server.gateway != nil {
+		writeJSON(writer, 400, map[string]string{"error": "use cluster-scoped /api/v1 endpoint"})
+		return
+	}
 	if !server.requireRuntimeMutations(writer) {
 		return
 	}
@@ -148,6 +179,10 @@ func (server *Server) handleBackendState(writer http.ResponseWriter, request *ht
 }
 
 func (server *Server) handleBackendDrain(writer http.ResponseWriter, request *http.Request) {
+	if server.gateway != nil {
+		writeJSON(writer, 400, map[string]string{"error": "use cluster-scoped /api/v1 endpoint"})
+		return
+	}
 	if !server.requireRuntimeMutations(writer) {
 		return
 	}
@@ -214,10 +249,15 @@ func (server *Server) handleLiveness(writer http.ResponseWriter, _ *http.Request
 }
 
 func (server *Server) handleReadiness(writer http.ResponseWriter, request *http.Request) {
-	backendReady := server.balancer.Ready()
+	backendReady := false
+	if server.gateway != nil {
+		backendReady = server.gateway.Ready()
+	} else {
+		backendReady = server.balancer.Ready()
+	}
 	limiterError := server.limiter.Healthy(request.Context())
 	settings := server.limiter.Settings()
-	ready := backendReady && (settings.FailureMode != "fail-closed" || limiterError == nil)
+	ready := !server.shuttingDown.Load() && backendReady && (!settings.Enabled || settings.FailureMode != "fail-closed" || limiterError == nil)
 	status := http.StatusOK
 	if !ready {
 		status = http.StatusServiceUnavailable

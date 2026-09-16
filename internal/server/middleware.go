@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/J0es1ick/cloud_test_assignment/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type contextKey string
@@ -24,24 +26,16 @@ const requestIDKey contextKey = "request-id"
 const managementCSRFHeader = "X-Balancer-CSRF"
 
 func (server *Server) managementAuth(token string, insecure bool, next http.Handler) http.Handler {
-	if insecure {
-		return next
+	credentials := append([]Credential{}, server.credentials...)
+	if token != "" {
+		credentials = append(credentials, Credential{Name: "admin", Role: "admin", Token: func() (string, error) { return token, nil }})
 	}
-	expected := []byte("Bearer " + token)
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		provided := []byte(request.Header.Get("Authorization"))
-		if len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
-			writer.Header().Set("WWW-Authenticate", `Bearer realm="load-balancer-management"`)
-			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
-			return
-		}
-		next.ServeHTTP(writer, request)
-	})
+	return server.authorize(credentials, insecure, next)
 }
 
 func (server *Server) managementMutationGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if !strings.HasPrefix(request.URL.Path, "/api/dashboard/") || request.Method == http.MethodGet || request.Method == http.MethodHead {
+		if !strings.HasPrefix(request.URL.Path, "/api/") || request.Method == http.MethodGet || request.Method == http.MethodHead {
 			next.ServeHTTP(writer, request)
 			return
 		}
@@ -65,6 +59,11 @@ func (server *Server) managementMutationGuard(next http.Handler) http.Handler {
 func (server *Server) instrument(listener string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requestID := request.Header.Get("X-Request-ID")
+		if listener == "public" {
+			var end func()
+			request, end = traceIncoming(request)
+			defer end()
+		}
 		if requestID == "" || len(requestID) > 128 {
 			requestID = newRequestID()
 		}
@@ -79,9 +78,15 @@ func (server *Server) instrument(listener string, next http.Handler) http.Handle
 			server.metrics.ObserveHTTPRequest(listener, recorder.status, duration)
 		}
 		if shouldLogAccess(listener, request.Method, recorder.status, server.accessLogSampleRate) {
-			slog.InfoContext(ctx, "HTTP request", "request_id", requestID, "listener", listener, "method", request.Method, "path", accessLogPath(request.URL.Path, server.accessLogIncludePath), "status", recorder.status, "duration_ms", duration.Milliseconds(), "client_ip", server.clientIP(request))
+			slog.InfoContext(ctx, "HTTP request", "request_id", requestID, "trace_id", observability.TraceID(ctx), "listener", listener, "method", request.Method, "path", accessLogPath(request.URL.Path, server.accessLogIncludePath), "status", recorder.status, "duration_ms", duration.Milliseconds(), "client_ip", server.clientIP(request))
 		}
 	})
+}
+
+func traceIncoming(request *http.Request) (*http.Request, func()) {
+	request, span := observability.TraceRequest(request)
+	span.SetAttributes(attribute.String("proxy.listener", "public"))
+	return request, func() { span.End() }
 }
 
 func accessLogPath(path string, include bool) string {
@@ -110,12 +115,23 @@ type statusRecorder struct {
 }
 
 func (recorder *statusRecorder) WriteHeader(status int) {
+	if status >= 100 && status < 200 {
+		recorder.ResponseWriter.WriteHeader(status)
+		return
+	}
 	if recorder.wroteHeader {
 		return
 	}
 	recorder.wroteHeader = true
 	recorder.status = status
 	recorder.ResponseWriter.WriteHeader(status)
+}
+
+func (recorder *statusRecorder) Write(value []byte) (int, error) {
+	if !recorder.wroteHeader {
+		recorder.WriteHeader(http.StatusOK)
+	}
+	return recorder.ResponseWriter.Write(value)
 }
 
 func (recorder *statusRecorder) Unwrap() http.ResponseWriter { return recorder.ResponseWriter }
@@ -129,7 +145,7 @@ func newRequestID() string {
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, destination any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64<<10))
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("invalid request body")

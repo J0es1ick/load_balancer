@@ -19,6 +19,13 @@ import (
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if handled, err := command(os.Args[1:]); handled {
+		if err != nil {
+			slog.Error("command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("balancer stopped", "error", err)
 		os.Exit(1)
@@ -29,6 +36,9 @@ func run() error {
 	cfg, err := config.InitConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if cfg.Gateway != nil && os.Getenv("MIGRATE_ONLY") != "true" {
+		return runGateway(cfg)
 	}
 	rootContext, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()

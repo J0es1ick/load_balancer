@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/J0es1ick/cloud_test_assignment/internal/balancer"
+	"github.com/J0es1ick/cloud_test_assignment/internal/config"
+	"github.com/J0es1ick/cloud_test_assignment/internal/gateway"
 	"github.com/J0es1ick/cloud_test_assignment/internal/observability"
 	"github.com/J0es1ick/cloud_test_assignment/internal/ratelimit"
 )
@@ -48,6 +51,11 @@ type RetryUpdate struct {
 }
 
 type Options struct {
+	Gateway                *gateway.Engine
+	Credentials            []Credential
+	ManagementTLS          config.ServerTLSConfig
+	MetricsAddress         string
+	MetricsToken           func() (string, error)
 	Port                   string
 	ManagementEnabled      bool
 	ManagementAddress      string
@@ -73,6 +81,15 @@ type Options struct {
 }
 
 type Server struct {
+	gateway              *gateway.Engine
+	configMu             sync.Mutex
+	extraServers         []*http.Server
+	connections          sync.Map
+	shuttingDown         atomic.Bool
+	credentials          []Credential
+	audit                auditLog
+	metricsServer        *http.Server
+	managementTLS        config.ServerTLSConfig
 	publicServer         *http.Server
 	managementServer     *http.Server
 	balancer             *balancer.LoadBalancer
@@ -110,7 +127,7 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 	if options.ManagementEnabled && options.ManagementAddress == "" {
 		return nil, fmt.Errorf("management address is required")
 	}
-	if options.ManagementEnabled && options.ManagementAuthToken == "" && !options.ManagementInsecure {
+	if options.ManagementEnabled && options.ManagementAuthToken == "" && len(options.Credentials) == 0 && !options.ManagementInsecure {
 		return nil, fmt.Errorf("management auth token is required")
 	}
 	resolver, err := newClientIPResolver(options.TrustedProxies)
@@ -125,6 +142,9 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 		instanceID = "local"
 	}
 	server := &Server{balancer: loadBalancer, limiter: limiter, metrics: options.Metrics, applyRuntime: options.ApplyRuntime, runtimeMutations: options.RuntimeMutations, instanceID: instanceID, accessLogSampleRate: options.AccessLogSampleRate, accessLogIncludePath: options.AccessLogIncludePath}
+	server.credentials = options.Credentials
+	server.gateway = options.Gateway
+	server.managementTLS = options.ManagementTLS
 	server.overload = newOverloadController(options.OverloadMaxConcurrent, options.OverloadQueueTimeout, options.Metrics)
 	server.resolver.Store(resolver)
 	server.health.Store(cloneHealth(options.Health))
@@ -132,7 +152,11 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 	publicMux := http.NewServeMux()
 	publicMux.HandleFunc("GET /healthz", server.handleLiveness)
 	publicMux.HandleFunc("GET /readyz", server.handleReadiness)
-	protectedProxy := server.overload.middleware(server.withVerifiedClientIP(ratelimit.RateLimitMiddleware(limiter, server.clientIP)(loadBalancer)))
+	var proxy http.Handler = loadBalancer
+	if server.gateway != nil {
+		proxy = server.gateway
+	}
+	protectedProxy := server.proxyPipeline(proxy)
 	publicMux.Handle("/", protectedProxy)
 	server.publicServer = newHTTPServer(":"+options.Port, server.instrument("public", publicMux), options, options.WriteTimeout)
 
@@ -148,13 +172,33 @@ func NewServer(options Options, loadBalancer *balancer.LoadBalancer, limiter *ra
 		managementMux.HandleFunc("POST /api/dashboard/backends/{id}/drain", server.handleBackendDrain)
 		managementMux.HandleFunc("POST /api/dashboard/limit", server.handleLimitReset)
 		managementMux.HandleFunc("PATCH /api/dashboard/config", server.handleRuntimeUpdate)
+		server.registerGatewayAPI(managementMux)
 		if options.EnablePprof {
 			registerPprof(managementMux)
 		}
 		managementHandler := server.managementAuth(options.ManagementAuthToken, options.ManagementInsecure, server.managementMutationGuard(managementMux))
 		server.managementServer = newHTTPServer(options.ManagementAddress, server.instrument("management", managementHandler), options, options.ManagementWriteTimeout)
 	}
+	if options.MetricsAddress != "" {
+		if options.MetricsToken == nil {
+			return nil, fmt.Errorf("metrics listener requires a token provider")
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /healthz", server.handleLiveness)
+		mux.HandleFunc("GET /readyz", server.handleReadiness)
+		mux.Handle("GET /metrics", server.authorize([]Credential{{Name: "prometheus", Role: "metrics", Token: options.MetricsToken}}, false, options.Metrics))
+		server.metricsServer = newHTTPServer(options.MetricsAddress, mux, options, options.ManagementWriteTimeout)
+	}
+	if server.gateway != nil {
+		if err := server.configureGatewayListeners(options); err != nil {
+			return nil, err
+		}
+	}
 	return server, nil
+}
+
+func (server *Server) proxyPipeline(next http.Handler) http.Handler {
+	return server.overload.middleware(server.withVerifiedClientIP(ratelimit.RateLimitMiddleware(server.limiter, server.clientIP)(next)))
 }
 
 func registerPprof(mux *http.ServeMux) {

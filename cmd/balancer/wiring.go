@@ -11,6 +11,7 @@ import (
 
 	"github.com/J0es1ick/cloud_test_assignment/internal/balancer"
 	"github.com/J0es1ick/cloud_test_assignment/internal/config"
+	"github.com/J0es1ick/cloud_test_assignment/internal/identity"
 	"github.com/J0es1ick/cloud_test_assignment/internal/observability"
 	"github.com/J0es1ick/cloud_test_assignment/internal/ratelimit"
 	"github.com/J0es1ick/cloud_test_assignment/internal/server"
@@ -51,17 +52,21 @@ func newRateLimitStore(ctx context.Context, cfg *config.Config) (ratelimit.Store
 	case "local":
 		return ratelimit.NewBoundedLocalStore(cfg.RateLimit.LocalShards, cfg.RateLimit.LocalMaxBuckets), nil
 	case "redis":
+		tlsConfig, err := identity.Client(cfg.Redis.TLS)
+		if err != nil {
+			return nil, err
+		}
 		password, err := config.SecretFromEnv(cfg.Redis.PasswordEnv)
 		if err != nil {
 			return nil, err
 		}
-		return ratelimit.NewRedisStore(ctx, ratelimit.RedisOptions{Address: cfg.Redis.Address, Password: password, Database: cfg.Redis.Database, PoolSize: cfg.Redis.PoolSize, DialTimeout: cfg.Redis.DialTimeout, ReadTimeout: cfg.Redis.ReadTimeout, WriteTimeout: cfg.Redis.WriteTimeout, Retention: cfg.RateLimit.Retention})
+		return ratelimit.NewRedisStore(ctx, ratelimit.RedisOptions{Username: cfg.Redis.Username, TLSConfig: tlsConfig, Address: cfg.Redis.Address, Password: password, Database: cfg.Redis.Database, PoolSize: cfg.Redis.PoolSize, DialTimeout: cfg.Redis.DialTimeout, ReadTimeout: cfg.Redis.ReadTimeout, WriteTimeout: cfg.Redis.WriteTimeout, Retention: cfg.RateLimit.Retention})
 	case "postgres":
 		password, err := config.SecretFromEnv(cfg.Database.PasswordEnv)
 		if err != nil {
 			return nil, err
 		}
-		return ratelimit.NewPostgresStore(ctx, ratelimit.PostgresOptions{Host: cfg.Database.Host, Port: cfg.Database.Port, User: cfg.Database.User, Password: password, Database: cfg.Database.Name, SSLMode: cfg.Database.SSLMode, ConnectTimeout: cfg.Database.ConnectTimeout, MaxOpenConns: cfg.Database.MaxOpenConns})
+		return ratelimit.NewPostgresStore(ctx, ratelimit.PostgresOptions{RootCertFile: cfg.Database.RootCertFile, ClientCertFile: cfg.Database.ClientCertFile, ClientKeyFile: cfg.Database.ClientKeyFile, Host: cfg.Database.Host, Port: cfg.Database.Port, User: cfg.Database.User, Password: password, Database: cfg.Database.Name, SSLMode: cfg.Database.SSLMode, ConnectTimeout: cfg.Database.ConnectTimeout, MaxOpenConns: cfg.Database.MaxOpenConns})
 	default:
 		return nil, fmt.Errorf("unknown rate limit storage %q", cfg.RateLimit.Storage)
 	}

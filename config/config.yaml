@@ -43,6 +43,69 @@ management:
   enable_pprof: false
   runtime_mutations: true
   write_timeout: "30s"
+  metrics_address: ":9091"
+  metrics_auth_token_env: "BALANCER_METRICS_TOKEN"
+  credentials:
+    - name: "console-viewer"
+      role: "viewer"
+      token_env: "BALANCER_VIEWER_TOKEN"
+    - name: "console-operator"
+      role: "operator"
+      token_env: "BALANCER_OPERATOR_TOKEN"
+    - name: "discovery-controller"
+      role: "discovery"
+      token_env: "BALANCER_DISCOVERY_TOKEN"
+
+gateway:
+  apiVersion: "proxy/v1"
+  history_limit: 10
+  listeners:
+    - id: "http"
+      address: ":8080"
+      protocol: "http1"
+      default: true
+  routes:
+    - id: "canary"
+      listener: "http"
+      priority: 30
+      match: {path_prefix: "/canary/"}
+      action:
+        weighted_clusters:
+          - {cluster: "primary", weight: 90}
+          - {cluster: "canary", weight: 10}
+        rewrite_prefix: "/"
+      max_request_body_bytes: 10485760
+    - id: "api"
+      listener: "http"
+      priority: 20
+      match: {path_prefix: "/api/"}
+      action: {cluster: "primary", rewrite_prefix: "/"}
+      max_request_body_bytes: 10485760
+    - id: "default"
+      listener: "http"
+      priority: 0
+      match: {path_prefix: "/"}
+      action: {cluster: "primary"}
+      max_request_body_bytes: 10485760
+  clusters:
+    - id: "primary"
+      strategy: "round_robin"
+      health: {enabled: true}
+      endpoints:
+        - {id: "backend-1", url: "http://backend1:80"}
+        - {id: "backend-2", url: "http://backend2:80"}
+        - {id: "backend-3", url: "http://backend3:80", disabled: true}
+        - {id: "backend-4", url: "http://backend4:80", disabled: true}
+        - {id: "backend-5", url: "http://backend5:80", disabled: true}
+        - {id: "backend-6", url: "http://backend6:80", disabled: true}
+        - {id: "backend-7", url: "http://backend7:80", disabled: true}
+        - {id: "backend-8", url: "http://backend8:80", disabled: true}
+    - id: "canary"
+      strategy: "round_robin"
+      health: {enabled: true}
+      endpoints:
+        - {id: "canary-1", url: "http://backend7:80"}
+        - {id: "canary-2", url: "http://backend8:80"}
 
 redis:
   address: "redis:6379"
@@ -61,30 +124,6 @@ database:
   sslmode: "disable"
   connect_timeout: "5s"
   max_open_connections: 25
-
-backends:
-  - id: "backend-1"
-    url: "http://backend1:80"
-  - id: "backend-2"
-    url: "http://backend2:80"
-  - id: "backend-3"
-    url: "http://backend3:80"
-    disabled: true
-  - id: "backend-4"
-    url: "http://backend4:80"
-    disabled: true
-  - id: "backend-5"
-    url: "http://backend5:80"
-    disabled: true
-  - id: "backend-6"
-    url: "http://backend6:80"
-    disabled: true
-  - id: "backend-7"
-    url: "http://backend7:80"
-    disabled: true
-  - id: "backend-8"
-    url: "http://backend8:80"
-    disabled: true
 
 rate_limit:
   enabled: true
