@@ -4,31 +4,84 @@ set -eu
 repository_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 environment_path="$repository_root/.env"
 secret_directory="$repository_root/deploy/secrets"
-secret_path="$secret_directory/admin_token.txt"
-balancer_public_port="${BALANCER_PUBLIC_PORT:-8080}"
-frontend_port="${FRONTEND_PORT:-3000}"
-edge_https_port="${EDGE_HTTPS_PORT:-8443}"
+admin_secret_path="$secret_directory/admin_token.txt"
+metrics_secret_path="$secret_directory/metrics_token.txt"
 
-admin_token=""
-grafana_password=""
-if [ -f "$environment_path" ]; then
-  admin_token="$(sed -n 's/^BALANCER_ADMIN_TOKEN=//p' "$environment_path" | head -n 1)"
-  grafana_password="$(sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' "$environment_path" | head -n 1)"
-fi
-
-[ -n "$admin_token" ] || admin_token="$(openssl rand -hex 32)"
-[ -n "$grafana_password" ] || grafana_password="$(openssl rand -hex 32)"
+public_port_explicit=false
+frontend_port_explicit=false
+edge_port_explicit=false
+[ "${BALANCER_PUBLIC_PORT+x}" = x ] && public_port_explicit=true
+[ "${FRONTEND_PORT+x}" = x ] && frontend_port_explicit=true
+[ "${EDGE_HTTPS_PORT+x}" = x ] && edge_port_explicit=true
+requested_public_port="${BALANCER_PUBLIC_PORT:-8080}"
+requested_frontend_port="${FRONTEND_PORT:-3000}"
+requested_edge_port="${EDGE_HTTPS_PORT:-8443}"
 
 umask 077
 mkdir -p "$secret_directory"
-printf '%s\n' \
-  "BALANCER_ADMIN_TOKEN=$admin_token" \
-  "GRAFANA_ADMIN_USER=admin" \
-  "GRAFANA_ADMIN_PASSWORD=$grafana_password" \
-  "POSTGRES_PASSWORD=local-postgres-not-enabled" \
-  "BALANCER_PUBLIC_PORT=$balancer_public_port" \
-  "FRONTEND_PORT=$frontend_port" \
-  "EDGE_HTTPS_PORT=$edge_https_port" \
-  "VITE_PUBLIC_URL=http://localhost:$balancer_public_port/" > "$environment_path"
-printf '%s' "$admin_token" > "$secret_path"
-printf '%s\n' 'Local credentials initialized in .env and deploy/secrets/.'
+touch "$environment_path"
+
+read_value() {
+  sed -n "s/^$1=//p" "$environment_path" | head -n 1
+}
+
+has_key() {
+  grep -q "^$1=" "$environment_path"
+}
+
+write_value() {
+  key="$1"
+  value="$2"
+  replace="${3:-false}"
+  current="$(read_value "$key")"
+  if has_key "$key"; then
+    if [ "$replace" = true ] || [ -z "$current" ]; then
+      temporary="$(mktemp "${environment_path}.tmp.XXXXXX")"
+      awk -v key="$key" -v value="$value" '
+        index($0, key "=") == 1 && !updated { print key "=" value; updated=1; next }
+        { print }
+      ' "$environment_path" > "$temporary"
+      mv "$temporary" "$environment_path"
+      printf '%s' "$value"
+    else
+      printf '%s' "$current"
+    fi
+  else
+    temporary="$(mktemp "${environment_path}.tmp.XXXXXX")"
+    awk -v key="$key" -v value="$value" '{ print } END { print key "=" value }' "$environment_path" > "$temporary"
+    mv "$temporary" "$environment_path"
+    printf '%s' "$value"
+  fi
+}
+
+random_secret() {
+  openssl rand -hex 32
+}
+
+ensure_secret() {
+  key="$1"
+  current="$(read_value "$key")"
+  if [ -n "$current" ]; then
+    printf '%s' "$current"
+  else
+    write_value "$key" "$(random_secret)"
+  fi
+}
+
+admin_token="$(ensure_secret BALANCER_ADMIN_TOKEN)"
+ensure_secret BALANCER_VIEWER_TOKEN >/dev/null
+ensure_secret BALANCER_OPERATOR_TOKEN >/dev/null
+ensure_secret BALANCER_DISCOVERY_TOKEN >/dev/null
+metrics_token="$(ensure_secret BALANCER_METRICS_TOKEN)"
+write_value GRAFANA_ADMIN_USER admin >/dev/null
+ensure_secret GRAFANA_ADMIN_PASSWORD >/dev/null
+ensure_secret POSTGRES_PASSWORD >/dev/null
+
+effective_public_port="$(write_value BALANCER_PUBLIC_PORT "$requested_public_port" "$public_port_explicit")"
+write_value FRONTEND_PORT "$requested_frontend_port" "$frontend_port_explicit" >/dev/null
+write_value EDGE_HTTPS_PORT "$requested_edge_port" "$edge_port_explicit" >/dev/null
+write_value VITE_PUBLIC_URL "http://localhost:$effective_public_port/" >/dev/null
+
+printf '%s' "$admin_token" > "$admin_secret_path"
+printf '%s' "$metrics_token" > "$metrics_secret_path"
+printf '%s\n' 'Missing local credentials were initialized; existing .env values were preserved.'

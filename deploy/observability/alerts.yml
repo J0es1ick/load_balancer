@@ -9,6 +9,14 @@ groups:
           summary: No backend is eligible for routing
           description: All configured backends are unhealthy, disabled, draining or ejected.
 
+      - alert: LoadBalancerClusterHasNoAvailableEndpoints
+        expr: load_balancer_cluster_available_endpoints == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: Cluster {{ $labels.cluster }} has no endpoint eligible for routing
+          description: Requests routed to this cluster will fail even if another cluster on the same proxy remains healthy.
+
       - alert: LoadBalancerRateLimitStorageDegraded
         expr: load_balancer_rate_limit_storage_healthy == 0
         for: 1m
@@ -48,3 +56,34 @@ groups:
         annotations:
           summary: Retry budget is being exhausted
           description: Retries are intentionally suppressed to avoid request amplification.
+
+      - alert: LoadBalancerConfigApplyFailed
+        expr: sum(increase(load_balancer_config_apply_total{result="failure"}[10m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: A runtime configuration update was rejected
+          description: Inspect the management audit log and validation error before retrying the update.
+
+      - alert: LoadBalancerConfigRevisionDiverged
+        expr: max by (job, namespace) (load_balancer_config_revision) - min by (job, namespace) (load_balancer_config_revision) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Load-balancer replicas run different configuration revisions
+          description: Check discovery delivery acknowledgements and the rollout state; sustained divergence can route clients differently between replicas.
+
+      - alert: LoadBalancerDiscoveryStale
+        expr: max by (cluster) (load_balancer_discovery_stale) == 1
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Endpoint discovery is stale for cluster {{ $labels.cluster }}
+          description: The last known endpoints remain in use, but the configured stale boundary has been crossed. Check DNS or EndpointSlice watch health.
+
+      - alert: LoadBalancerBuildsDiverged
+        expr: count by (job, namespace) (count by (job, namespace, version, commit) (load_balancer_build_info)) > 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Multiple balancer builds are serving after the rollout window
+          description: A rollout may be stalled or a workload may reference a mutable image tag.

@@ -44,6 +44,10 @@ services:
     environment:
       CONFIG_PATH: /config/config.yaml
       BALANCER_ADMIN_TOKEN: ${BALANCER_ADMIN_TOKEN:?copy .env.example to .env and set a token}
+      BALANCER_VIEWER_TOKEN: ${BALANCER_VIEWER_TOKEN:?run scripts/init-local to create local credentials}
+      BALANCER_OPERATOR_TOKEN: ${BALANCER_OPERATOR_TOKEN:?run scripts/init-local to create local credentials}
+      BALANCER_DISCOVERY_TOKEN: ${BALANCER_DISCOVERY_TOKEN:?run scripts/init-local to create local credentials}
+      BALANCER_METRICS_TOKEN: ${BALANCER_METRICS_TOKEN:?run scripts/init-local to create local credentials}
     ports:
       - "127.0.0.1:${BALANCER_PUBLIC_PORT:-8080}:8080"
     volumes:

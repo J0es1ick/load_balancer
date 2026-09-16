@@ -10,7 +10,7 @@ services:
       - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/observability/alerts.yml:/etc/prometheus/rules/alerts.yml:ro
       - prometheus_data:/prometheus
-    secrets: [admin_token]
+    secrets: [metrics_token]
     ports:
       - "127.0.0.1:9091:9090"
     read_only: true
@@ -60,8 +60,8 @@ volumes:
   grafana_data:
 
 secrets:
-  admin_token:
-    file: ./deploy/secrets/admin_token.txt
+  metrics_token:
+    file: ./deploy/secrets/metrics_token.txt
 
 networks:
   monitoring:

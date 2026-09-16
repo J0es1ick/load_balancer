@@ -5,6 +5,7 @@
 coverage.out
 *.prof
 .cache/
+.tmp-go-cache/
 frontend/node_modules/
 frontend/dist/
 deploy/secrets/
