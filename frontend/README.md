@@ -5,7 +5,7 @@ TypeScript/Vite SPA для `proxy/v1`. Один интерфейс работа�
 - `demo` — статическая документация и детерминированный browser simulator, без сетевых запросов;
 - `live` — консоль запущенного Go proxy через защищённый management API `/api/v1`.
 
-Разделы интерфейса соответствуют runtime-модели: Overview, Request lab, Routes, Clusters, Config и Guide. Dashboard не является источником production-конфигурации: при `runtime_mutations_enabled=false` изменяющие controls блокируются.
+Разделы интерфейса соответствуют runtime-модели: Overview, Request lab, Routes, Clusters, Config и «Как это работает». Dashboard не является источником production-конфигурации: при `runtime_mutations_enabled=false` изменяющие controls блокируются.
 
 ## Команды
 
@@ -24,8 +24,9 @@ GitHub Pages собирает `demo` с `VITE_BASE_PATH=/<repository>/`. Это�
 
 ```dotenv
 BALANCER_ADMIN_TOKEN_FILE=/absolute/path/to/local/admin-token
-# либо BALANCER_ADMIN_TOKEN=local-development-token
 ```
+
+Для локальной разработки вместо файла можно задать `BALANCER_ADMIN_TOKEN=local-development-token`.
 
 Vite проксирует `/api` на `VITE_API_PROXY_TARGET`. В контейнере frontend nginx добавляет bearer token server-side, поэтому credential не попадает в JavaScript.
 
