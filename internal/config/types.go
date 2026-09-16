@@ -10,6 +10,8 @@ type Config struct {
 	Backends    []BackendConfig   `yaml:"backends"`
 	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
 	HealthCheck HealthCheckConfig `yaml:"health_check"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	Gateway     *GatewayConfig    `yaml:"gateway,omitempty" json:"gateway,omitempty"`
 }
 
 type ServerConfig struct {
@@ -56,16 +58,23 @@ type OverloadConfig struct {
 }
 
 type ManagementConfig struct {
-	Enabled          bool          `yaml:"enabled"`
-	Address          string        `yaml:"address"`
-	AuthTokenEnv     string        `yaml:"auth_token_env"`
-	AllowInsecure    bool          `yaml:"allow_insecure"`
-	EnablePprof      bool          `yaml:"enable_pprof"`
-	RuntimeMutations bool          `yaml:"runtime_mutations"`
-	WriteTimeout     time.Duration `yaml:"write_timeout"`
+	Credentials         []CredentialConfig `yaml:"credentials"`
+	MetricsAddress      string             `yaml:"metrics_address"`
+	MetricsAuthTokenEnv string             `yaml:"metrics_auth_token_env"`
+	TLS                 ServerTLSConfig    `yaml:"tls"`
+	Enabled             bool               `yaml:"enabled"`
+	Address             string             `yaml:"address"`
+	AuthTokenEnv        string             `yaml:"auth_token_env"`
+	AllowInsecure       bool               `yaml:"allow_insecure"`
+	EnablePprof         bool               `yaml:"enable_pprof"`
+	RuntimeMutations    bool               `yaml:"runtime_mutations"`
+	WriteTimeout        time.Duration      `yaml:"write_timeout"`
 }
 
 type DatabaseConfig struct {
+	RootCertFile   string        `yaml:"root_cert_file"`
+	ClientCertFile string        `yaml:"client_cert_file"`
+	ClientKeyFile  string        `yaml:"client_key_file"`
 	Host           string        `yaml:"host"`
 	Port           string        `yaml:"port"`
 	User           string        `yaml:"user"`
@@ -77,13 +86,15 @@ type DatabaseConfig struct {
 }
 
 type RedisConfig struct {
-	Address      string        `yaml:"address"`
-	PasswordEnv  string        `yaml:"password_env"`
-	Database     int           `yaml:"database"`
-	PoolSize     int           `yaml:"pool_size"`
-	DialTimeout  time.Duration `yaml:"dial_timeout"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
+	Username     string          `yaml:"username"`
+	TLS          ClientTLSConfig `yaml:"tls"`
+	Address      string          `yaml:"address"`
+	PasswordEnv  string          `yaml:"password_env"`
+	Database     int             `yaml:"database"`
+	PoolSize     int             `yaml:"pool_size"`
+	DialTimeout  time.Duration   `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration   `yaml:"read_timeout"`
+	WriteTimeout time.Duration   `yaml:"write_timeout"`
 }
 
 type BackendConfig struct {

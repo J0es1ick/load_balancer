@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"strconv"
 	"time"
@@ -51,6 +52,8 @@ return tostring(tokens)
 `
 
 type RedisOptions struct {
+	Username     string
+	TLSConfig    *tls.Config
 	Address      string
 	Password     string
 	Database     int
@@ -72,6 +75,7 @@ type RedisStore struct {
 
 func NewRedisStore(_ context.Context, options RedisOptions) (*RedisStore, error) {
 	client := redis.NewClient(&redis.Options{
+		Username: options.Username, TLSConfig: options.TLSConfig,
 		Addr: options.Address, Password: options.Password, DB: options.Database,
 		PoolSize: options.PoolSize, DialTimeout: options.DialTimeout,
 		ReadTimeout: options.ReadTimeout, WriteTimeout: options.WriteTimeout,

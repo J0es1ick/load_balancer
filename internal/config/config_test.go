@@ -70,6 +70,27 @@ func TestLoadRejectsDuplicateIDsUnknownFieldsAndUnsafeManagement(t *testing.T) {
 	assert.ErrorContains(t, err, "auth_token_env")
 }
 
+func TestLoadRejectsMixedGatewayAndLegacyBackends(t *testing.T) {
+	mixed := validConfig + `
+gateway:
+  apiVersion: proxy/v1
+  listeners:
+    - {id: public, address: ":8080", protocol: http1}
+  routes:
+    - id: root
+      match: {path_prefix: /}
+      action: {cluster: api}
+  clusters:
+    - id: api
+      strategy: round_robin
+      discovery: {type: static}
+      endpoints:
+        - {id: api-1, url: "http://backend:8081"}
+`
+	_, err := config.Load(writeConfig(t, mixed))
+	require.ErrorContains(t, err, "cannot be configured together")
+}
+
 func TestValidateReloadSeparatesDynamicAndImmutableSettings(t *testing.T) {
 	current, err := config.Load(writeConfig(t, validConfig))
 	require.NoError(t, err)

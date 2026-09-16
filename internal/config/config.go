@@ -84,6 +84,9 @@ func Load(path string) (*Config, error) {
 }
 
 func (cfg *Config) applyDefaults() {
+	if cfg.Gateway != nil {
+		cfg.Gateway.ApplyDefaults()
+	}
 	if cfg.Server.Port == "" {
 		cfg.Server.Port = defaultServerPort
 	}
@@ -248,6 +251,9 @@ func (cfg *Config) applyDefaults() {
 	}
 	if cfg.HealthCheck.SlowStartMinimum == 0 {
 		cfg.HealthCheck.SlowStartMinimum = defaultSlowStartMinPercent
+	}
+	if cfg.Gateway != nil {
+		cfg.Gateway.ApplyInheritedDefaults(cfg.Server.Upstream, cfg.Server.Retry, cfg.HealthCheck)
 	}
 }
 

@@ -17,6 +17,9 @@ import (
 var migrationFiles embed.FS
 
 type PostgresOptions struct {
+	RootCertFile   string
+	ClientCertFile string
+	ClientKeyFile  string
 	Host           string
 	Port           string
 	User           string
@@ -33,6 +36,15 @@ func NewPostgresStore(ctx context.Context, options PostgresOptions) (*PostgresSt
 	dsn := &url.URL{Scheme: "postgres", Host: options.Host + ":" + options.Port, Path: options.Database, User: url.UserPassword(options.User, options.Password)}
 	query := dsn.Query()
 	query.Set("sslmode", options.SSLMode)
+	if options.RootCertFile != "" {
+		query.Set("sslrootcert", options.RootCertFile)
+	}
+	if options.ClientCertFile != "" {
+		query.Set("sslcert", options.ClientCertFile)
+	}
+	if options.ClientKeyFile != "" {
+		query.Set("sslkey", options.ClientKeyFile)
+	}
 	query.Set("connect_timeout", strconv.Itoa(max(1, int(options.ConnectTimeout.Seconds()))))
 	dsn.RawQuery = query.Encode()
 	db, err := sql.Open("pgx", dsn.String())

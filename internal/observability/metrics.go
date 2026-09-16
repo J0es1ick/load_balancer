@@ -28,6 +28,8 @@ type histogramSnapshot struct {
 }
 
 type Metrics struct {
+	gatewayProvider  func() GatewayMetric
+	started          time.Time
 	httpSeries       sync.Map
 	upstreamAttempts sync.Map
 	upstreamDuration sync.Map
@@ -40,6 +42,7 @@ type Metrics struct {
 
 type BackendMetric struct {
 	ID        string
+	Cluster   string
 	Available bool
 }
 type LimiterMetric struct {
@@ -51,7 +54,7 @@ type LimiterMetric struct {
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{}
+	return &Metrics{started: time.Now()}
 }
 
 func (metrics *Metrics) ObserveProtectionEvent(kind, backendID string) {
@@ -100,7 +103,9 @@ func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 	metrics.providersMu.RLock()
 	backendProvider := metrics.backendProvider
 	limiterProvider := metrics.limiterProvider
+	gatewayProvider := metrics.gatewayProvider
 	metrics.providersMu.RUnlock()
+	metrics.writeRuntimeMetrics(writer, gatewayProvider)
 	writeLine(writer, "# HELP load_balancer_http_requests_total Requests handled by listener and status code.")
 	writeLine(writer, "# TYPE load_balancer_http_requests_total counter")
 	for _, key := range sortedKeys(httpRequests) {
@@ -131,7 +136,11 @@ func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 		writeLine(writer, "# HELP load_balancer_backend_available Whether a backend is eligible for routing.")
 		writeLine(writer, "# TYPE load_balancer_backend_available gauge")
 		for _, backend := range backendProvider() {
-			writeLine(writer, fmt.Sprintf("load_balancer_backend_available{backend=%q} %d", backend.ID, boolNumber(backend.Available)))
+			labels := fmt.Sprintf("backend=%q", backend.ID)
+			if backend.Cluster != "" {
+				labels += fmt.Sprintf(",cluster=%q", backend.Cluster)
+			}
+			writeLine(writer, fmt.Sprintf("load_balancer_backend_available{%s} %d", labels, boolNumber(backend.Available)))
 		}
 	}
 	if limiterProvider != nil {

@@ -11,6 +11,9 @@ import (
 )
 
 func (cfg *Config) Validate() error {
+	if err := cfg.validateSecurity(); err != nil {
+		return err
+	}
 	if port, err := strconv.Atoi(cfg.Server.Port); err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("server.port must be a number between 1 and 65535")
 	}
@@ -59,15 +62,20 @@ func (cfg *Config) Validate() error {
 		if cfg.Management.Address == "" {
 			return fmt.Errorf("management.address is required when management API is enabled")
 		}
-		if cfg.Management.AuthTokenEnv == "" && !cfg.Management.AllowInsecure {
+		if cfg.Management.AuthTokenEnv == "" && len(cfg.Management.Credentials) == 0 && !cfg.Management.AllowInsecure {
 			return fmt.Errorf("management.auth_token_env is required unless allow_insecure is enabled")
 		}
 		if cfg.Management.WriteTimeout <= 0 {
 			return fmt.Errorf("management.write_timeout must be positive")
 		}
 	}
-	if err := cfg.validateBackends(); err != nil {
-		return err
+	if cfg.Gateway != nil && len(cfg.Backends) > 0 {
+		return fmt.Errorf("gateway and legacy backends cannot be configured together")
+	}
+	if cfg.Gateway == nil {
+		if err := cfg.validateBackends(); err != nil {
+			return err
+		}
 	}
 	if !slices.Contains([]string{"local", "redis", "postgres"}, cfg.RateLimit.Storage) {
 		return fmt.Errorf("rate_limit.storage must be local, redis or postgres")
@@ -104,6 +112,9 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("health_check.expected_statuses contains invalid status %d", status)
 		}
 	}
+	if err := cfg.Gateway.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -134,6 +145,9 @@ func (cfg *Config) validateBackends() error {
 }
 
 func ValidateReload(current, next *Config) error {
+	if !reflect.DeepEqual(current.Telemetry, next.Telemetry) {
+		return fmt.Errorf("telemetry changes require a restart")
+	}
 	if current.Server.Port != next.Server.Port || current.Server.ReadHeaderTimeout != next.Server.ReadHeaderTimeout || current.Server.ReadTimeout != next.Server.ReadTimeout || current.Server.WriteTimeout != next.Server.WriteTimeout || current.Server.IdleTimeout != next.Server.IdleTimeout || current.Server.AccessLogSampleRate != next.Server.AccessLogSampleRate || current.Server.AccessLogIncludePath != next.Server.AccessLogIncludePath || current.Server.MaxHeaderBytes != next.Server.MaxHeaderBytes || !reflect.DeepEqual(current.Server.Upstream, next.Server.Upstream) || !reflect.DeepEqual(current.Server.Overload, next.Server.Overload) || !reflect.DeepEqual(current.Management, next.Management) {
 		return fmt.Errorf("listener, management and upstream transport changes require a restart")
 	}
