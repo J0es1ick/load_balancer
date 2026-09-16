@@ -1,6 +1,8 @@
 .git
 .github
 .env
+.cache
+.tmp-go-cache
 frontend
 docs
 test
