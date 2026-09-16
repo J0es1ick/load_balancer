@@ -87,21 +87,51 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          npm test
           npm run build:live
           npm run build:demo
 
       - name: Deployment manifests
         env:
           BALANCER_ADMIN_TOKEN: ci-only-management-token
+          BALANCER_VIEWER_TOKEN: ci-only-viewer-token
+          BALANCER_OPERATOR_TOKEN: ci-only-operator-token
+          BALANCER_DISCOVERY_TOKEN: ci-only-discovery-token
+          BALANCER_METRICS_TOKEN: ci-only-metrics-token
           GRAFANA_ADMIN_PASSWORD: ci-only-grafana-password
         run: |
           mkdir -p deploy/secrets
           printf '%s' "$BALANCER_ADMIN_TOKEN" > deploy/secrets/admin_token.txt
+          printf '%s' "$BALANCER_METRICS_TOKEN" > deploy/secrets/metrics_token.txt
           docker compose config --quiet
           docker compose -f docker-compose.yml -f deploy/compose.edge.yml config --quiet
           docker compose -f docker-compose.yml -f deploy/compose.observability.yml config --quiet
+          go run ./cmd/balancer validate -config config/config.yaml
+          go run ./cmd/balancer validate -config deploy/kubernetes/base/config/config.yaml
+          go run ./cmd/balancer validate -config deploy/kubernetes/endpointslice/config.yaml
+          go run ./cmd/balancer validate -config deploy/kubernetes/postgres-migration/config.yaml
           kubectl kustomize deploy/kubernetes/base >/dev/null
+          kubectl kustomize deploy/kubernetes/endpointslice >/dev/null
           kubectl kustomize deploy/kubernetes/optional >/dev/null
+          kubectl kustomize deploy/kubernetes/postgres-migration >/dev/null
+          helm lint deploy/helm/load-balancer
+          helm template ci deploy/helm/load-balancer --namespace load-balancer >/dev/null
+          helm template ci deploy/helm/load-balancer --namespace load-balancer --show-only templates/configmap.yaml > /tmp/balancer-configmap.yaml
+          awk 'found { sub(/^    /, ""); print } /^  config.yaml: \|$/ { found=1 }' /tmp/balancer-configmap.yaml > /tmp/balancer-config.yaml
+          go run ./cmd/balancer validate -config /tmp/balancer-config.yaml
+          helm lint deploy/helm/load-balancer -f deploy/helm/load-balancer/values-endpointslice.example.yaml
+          helm template ci-discovery deploy/helm/load-balancer --namespace load-balancer -f deploy/helm/load-balancer/values-endpointslice.example.yaml >/dev/null
+          helm template ci-discovery deploy/helm/load-balancer --namespace load-balancer -f deploy/helm/load-balancer/values-endpointslice.example.yaml --show-only templates/configmap.yaml > /tmp/balancer-discovery-configmap.yaml
+          awk 'found { sub(/^    /, ""); print } /^  config.yaml: \|$/ { found=1 }' /tmp/balancer-discovery-configmap.yaml > /tmp/balancer-discovery-config.yaml
+          go run ./cmd/balancer validate -config /tmp/balancer-discovery-config.yaml
+          if helm template insecure-discovery deploy/helm/load-balancer --set discovery.enabled=true >/dev/null 2>&1; then
+            echo 'plaintext discovery rendered without explicit opt-in' >&2
+            exit 1
+          fi
+          if helm template isolated-discovery deploy/helm/load-balancer -f deploy/helm/load-balancer/values-endpointslice.example.yaml --set networkPolicy.egress.enabled=true >/dev/null 2>&1; then
+            echo 'EndpointSlice discovery rendered without an API-server egress rule' >&2
+            exit 1
+          fi
 
   security:
     runs-on: ubuntu-latest
@@ -122,10 +152,22 @@ jobs:
       - name: Build runtime image
         run: docker build --pull --tag load-balancer:ci .
 
+      - name: Build frontend runtime image
+        run: docker build --pull --tag load-balancer-frontend:ci ./frontend
+
       - name: Container vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: load-balancer:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Frontend container vulnerability scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: load-balancer-frontend:ci
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
@@ -136,6 +178,10 @@ jobs:
     needs: [quality, security]
     env:
       BALANCER_ADMIN_TOKEN: ci-only-management-token
+      BALANCER_VIEWER_TOKEN: ci-only-viewer-token
+      BALANCER_OPERATOR_TOKEN: ci-only-operator-token
+      BALANCER_DISCOVERY_TOKEN: ci-only-discovery-token
+      BALANCER_METRICS_TOKEN: ci-only-metrics-token
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -159,22 +205,24 @@ jobs:
       - name: k6 throughput profile without throttling
         shell: bash
         run: |
-          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"rate_limit":{"capacity":100000,"refill_per_second":100000}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
-          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"count":8}' http://127.0.0.1:3000/api/dashboard/backends >/dev/null
+          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"capacity":100000,"refill_per_second":100000}' http://127.0.0.1:3000/api/v1/rate-limit >/dev/null
+          for backend in backend-{3..8}; do
+            curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"enabled":true}' "http://127.0.0.1:3000/api/v1/clusters/primary/endpoints/${backend}" >/dev/null
+          done
           for attempt in {1..30}; do
-            if [ "$(curl --fail --silent http://127.0.0.1:3000/api/dashboard/status | jq '[.backends[] | select(.available)] | length')" = "8" ]; then break; fi
+            if [ "$(curl --fail --silent http://127.0.0.1:3000/api/v1/status | jq '[.gateway.clusters[] | select(.id == "primary") | .endpoints[] | select(.available)] | length')" = "8" ]; then break; fi
             sleep 1
           done
-          test "$(curl --fail --silent http://127.0.0.1:3000/api/dashboard/status | jq '[.backends[] | select(.available)] | length')" = "8"
+          test "$(curl --fail --silent http://127.0.0.1:3000/api/v1/status | jq '[.gateway.clusters[] | select(.id == "primary") | .endpoints[] | select(.available)] | length')" = "8"
           docker compose exec -T redis redis-cli FLUSHDB >/dev/null
-          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=throughput -e VUS=10 -e DURATION=15s -e EXPECTED_BACKENDS=backend-1,backend-2,backend-3,backend-4,backend-5,backend-6,backend-7,backend-8 /scripts/k6.js
+          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=throughput -e RATE=100 -e PRE_ALLOCATED_VUS=20 -e MAX_VUS=100 -e DURATION=15s -e EXPECTED_BACKENDS=backend-1,backend-2,backend-3,backend-4,backend-5,backend-6,backend-7,backend-8 -e 'BACKEND_PATTERNS_JSON={"backend-1":"Backend 1","backend-2":"Backend 2","backend-3":"Backend 3","backend-4":"Backend 4","backend-5":"Backend 5","backend-6":"Backend 6","backend-7":"Backend 7","backend-8":"Backend 8"}' -e SUMMARY_PATH=/tmp/throughput-report.json /scripts/k6.js
 
       - name: k6 rate-limit profile proves 200 to 429 transition
         shell: bash
         run: |
-          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"rate_limit":{"capacity":20,"refill_per_second":1}}' http://127.0.0.1:3000/api/dashboard/config >/dev/null
+          curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"capacity":20,"refill_per_second":1}' http://127.0.0.1:3000/api/v1/rate-limit >/dev/null
           docker compose exec -T redis redis-cli FLUSHDB >/dev/null
-          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=rate-limit -e VUS=5 -e DURATION=10s /scripts/k6.js
+          docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=rate-limit -e RATE=5 -e DURATION=10s -e SUMMARY_PATH=/tmp/rate-limit-report.json /scripts/k6.js
 
       - name: Stop deployment template
         if: always()
@@ -248,9 +296,10 @@ jobs:
         shell: bash
         run: |
           repository="${GITHUB_REPOSITORY,,}"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           balancer_image="ghcr.io/${repository}-balancer:${GITHUB_REF_NAME}"
           frontend_image="ghcr.io/${repository}-frontend:${GITHUB_REF_NAME}"
-          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --tag "$balancer_image" --push .
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --build-arg VERSION="$GITHUB_REF_NAME" --build-arg COMMIT="$GITHUB_SHA" --build-arg BUILD_DATE="$build_date" --tag "$balancer_image" --push .
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --tag "$frontend_image" --push ./frontend
           balancer_digest="$(docker buildx imagetools inspect "$balancer_image" --format '{{.Manifest.Digest}}')"
           frontend_digest="$(docker buildx imagetools inspect "$frontend_image" --format '{{.Manifest.Digest}}')"
@@ -273,6 +322,17 @@ jobs:
         run: |
           cosign sign --yes "${BALANCER_IMAGE}@${BALANCER_DIGEST}"
           cosign sign --yes "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
+
+      - name: Verify release signatures before attestation
+        env:
+          BALANCER_IMAGE: ${{ steps.images.outputs.balancer_image }}
+          BALANCER_DIGEST: ${{ steps.images.outputs.balancer_digest }}
+          FRONTEND_IMAGE: ${{ steps.images.outputs.frontend_image }}
+          FRONTEND_DIGEST: ${{ steps.images.outputs.frontend_digest }}
+        run: |
+          identity="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/workflow.yml@refs/tags/v"
+          cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer https://token.actions.githubusercontent.com "${BALANCER_IMAGE}@${BALANCER_DIGEST}"
+          cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer https://token.actions.githubusercontent.com "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
 
       - name: Attest balancer provenance
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
