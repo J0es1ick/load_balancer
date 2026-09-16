@@ -153,6 +153,7 @@ jobs:
         run: docker build --pull --tag load-balancer:ci .
 
       - name: Build frontend runtime image
+        id: build_frontend
         run: docker build --pull --tag load-balancer-frontend:ci ./frontend
 
       - name: Container vulnerability scan
@@ -165,6 +166,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Frontend container vulnerability scan
+        if: ${{ !cancelled() && steps.build_frontend.outcome == 'success' }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: load-balancer-frontend:ci
