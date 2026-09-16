@@ -27,6 +27,7 @@ type HealthSettings struct {
 	SlowStart             time.Duration
 	SlowStartMinimum      int
 	MaxConcurrentRequests int64
+	Transport             http.RoundTripper
 }
 
 type HealthChecker struct {
@@ -193,13 +194,17 @@ func checkBackend(parent context.Context, backendURL *url.URL, settings HealthSe
 	if err != nil {
 		return false
 	}
-	client := &http.Client{Transport: &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		DialContext:         (&net.Dialer{Timeout: settings.Timeout, KeepAlive: 30 * time.Second}).DialContext,
-		TLSHandshakeTimeout: settings.Timeout,
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-		DisableKeepAlives:   true,
-	}}
+	transport := settings.Transport
+	if transport == nil {
+		transport = &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         (&net.Dialer{Timeout: settings.Timeout, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout: settings.Timeout,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+			DisableKeepAlives:   true,
+		}
+	}
+	client := &http.Client{Transport: transport}
 	response, err := client.Do(request)
 	if err != nil {
 		return false

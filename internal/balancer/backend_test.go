@@ -125,6 +125,18 @@ func TestPassiveCooldownCannotBeBypassedByActiveHealth(t *testing.T) {
 	assert.True(t, backend.IsAlive())
 }
 
+func TestPassiveCooldownRecoversDuringSelectionWithoutActiveChecker(t *testing.T) {
+	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}, balancer.PassivePolicy{FailureThreshold: 1, Cooldown: 10 * time.Millisecond, MaxConcurrentRequests: 8, SlowStartMinimum: 100})
+	require.NoError(t, err)
+	backend := pool.GetBackends()[0]
+	backend.SetAlive(true)
+	backend.RecordPassiveFailure(pool.PassivePolicy())
+	assert.Empty(t, pool.AvailableBackends())
+	time.Sleep(15 * time.Millisecond)
+	assert.Equal(t, []*balancer.Backend{backend}, pool.AvailableBackends())
+	assert.True(t, backend.IsHealthy())
+}
+
 func TestConcurrentPassiveFailureCannotBeClearedByActiveHealth(t *testing.T) {
 	pool, err := balancer.NewBackendPool([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}, balancer.PassivePolicy{FailureThreshold: 1, Cooldown: time.Minute, MaxConcurrentRequests: 8, SlowStartMinimum: 100})
 	require.NoError(t, err)

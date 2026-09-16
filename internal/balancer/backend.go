@@ -11,6 +11,7 @@ import (
 type BackendSpec struct {
 	ID       string
 	URL      string
+	Weight   int
 	Disabled bool
 }
 
@@ -28,6 +29,7 @@ type Backend struct {
 	stateMu            sync.Mutex
 	id                 string
 	URL                *url.URL
+	weight             atomic.Int64
 	healthy            atomic.Bool
 	enabled            atomic.Bool
 	requests           atomic.Uint64
@@ -42,6 +44,14 @@ type Backend struct {
 }
 
 func (b *Backend) ID() string { return b.id }
+
+func (b *Backend) Weight() int {
+	weight := int(b.weight.Load())
+	if weight < 1 {
+		return 1
+	}
+	return weight
+}
 
 func (b *Backend) SetAlive(alive bool) {
 	b.stateMu.Lock()
@@ -99,9 +109,13 @@ func (b *Backend) RecordPassiveFailure(policy PassivePolicy) {
 		b.stateMu.Unlock()
 		return
 	}
-	b.ejectedUntil.Store(time.Now().Add(policy.Cooldown).UnixNano())
+	recoverAt := time.Now().Add(policy.Cooldown).UnixNano()
+	b.ejectedUntil.Store(recoverAt)
 	changed := b.setAliveLocked(false)
 	b.stateMu.Unlock()
+	if b.pool != nil {
+		b.pool.scheduleRecovery(recoverAt)
+	}
 	b.refreshAvailability(changed)
 }
 
@@ -126,6 +140,22 @@ func (b *Backend) IsHealthy() bool { return b.healthy.Load() }
 func (b *Backend) IsEjected() bool {
 	until := b.ejectedUntil.Load()
 	return until > 0 && time.Now().UnixNano() < until
+}
+
+func (b *Backend) recoverExpiredEjection(now time.Time) bool {
+	until := b.ejectedUntil.Load()
+	if until == 0 || now.UnixNano() < until {
+		return false
+	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	until = b.ejectedUntil.Load()
+	if until == 0 || now.UnixNano() < until {
+		return false
+	}
+	b.ejectedUntil.Store(0)
+	b.passiveFailures.Store(0)
+	return b.setAliveLocked(true)
 }
 
 func (b *Backend) SetEnabled(enabled bool) {
@@ -224,6 +254,7 @@ type BackendSnapshot struct {
 	Draining         bool   `json:"draining"`
 	SlowStartPercent int    `json:"slow_start_percent"`
 	CircuitState     string `json:"circuit_state"`
+	Weight           int    `json:"weight"`
 }
 
 func (b *Backend) Snapshot() BackendSnapshot {
@@ -232,6 +263,7 @@ func (b *Backend) Snapshot() BackendSnapshot {
 		Available: b.IsAlive(), Ejected: b.IsEjected(), Requests: b.requests.Load(),
 		PassiveFailures: b.passiveFailures.Load(), Inflight: b.Inflight(), Draining: b.IsDraining(),
 		SlowStartPercent: b.SlowStartPercent(), CircuitState: b.circuitState(),
+		Weight: b.Weight(),
 	}
 }
 
@@ -246,10 +278,11 @@ func (b *Backend) circuitState() string {
 }
 
 type BackendPool struct {
-	mu        sync.Mutex
-	all       atomic.Pointer[backendList]
-	available atomic.Pointer[backendList]
-	policy    atomic.Pointer[PassivePolicy]
+	mu           sync.Mutex
+	all          atomic.Pointer[backendList]
+	available    atomic.Pointer[backendList]
+	policy       atomic.Pointer[PassivePolicy]
+	nextRecovery atomic.Int64
 }
 
 type BackendReplacement struct {
@@ -293,7 +326,12 @@ func (p *BackendPool) buildBackends(specs []BackendSpec) (backendList, error) {
 		}
 		ids[spec.ID] = struct{}{}
 		urls[backendURL.String()] = struct{}{}
+		weight := spec.Weight
+		if weight < 1 {
+			weight = 1
+		}
 		backend := &Backend{id: spec.ID, URL: backendURL}
+		backend.weight.Store(int64(weight))
 		backend.enabled.Store(!spec.Disabled)
 		backends = append(backends, backend)
 	}
@@ -328,7 +366,7 @@ func (p *BackendPool) CommitReplacement(replacement *BackendReplacement) error {
 	}
 	for index, backend := range replacement.backends {
 		if previous, exists := current[backend.ID()+"\x00"+backend.URL.String()]; exists {
-			previous.applyReplacementState(backend.IsEnabled(), backend.IsHealthy())
+			previous.applyReplacementState(backend.IsEnabled(), backend.IsHealthy(), backend.Weight())
 			replacement.backends[index] = previous
 		} else {
 			backend.pool = p
@@ -339,10 +377,11 @@ func (p *BackendPool) CommitReplacement(replacement *BackendReplacement) error {
 	return nil
 }
 
-func (b *Backend) applyReplacementState(enabled, warmedHealthy bool) {
+func (b *Backend) applyReplacementState(enabled, warmedHealthy bool, weight int) {
 	b.stateMu.Lock()
 	b.draining.Store(false)
 	b.enabled.Store(enabled)
+	b.weight.Store(int64(weight))
 	if warmedHealthy && !b.healthy.Load() {
 		b.setAliveLocked(true)
 	}
@@ -404,11 +443,47 @@ func (p *BackendPool) GetBackends() []*Backend {
 }
 
 func (p *BackendPool) AvailableBackends() []*Backend {
+	if deadline := p.nextRecovery.Load(); deadline > 0 && time.Now().UnixNano() >= deadline {
+		p.recoverExpiredEjections(time.Now())
+	}
 	current := p.available.Load()
 	if current == nil {
 		return nil
 	}
 	return *current
+}
+
+func (p *BackendPool) scheduleRecovery(deadline int64) {
+	for {
+		current := p.nextRecovery.Load()
+		if current > 0 && current <= deadline {
+			return
+		}
+		if p.nextRecovery.CompareAndSwap(current, deadline) {
+			return
+		}
+	}
+}
+
+func (p *BackendPool) recoverExpiredEjections(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	deadline := p.nextRecovery.Load()
+	if deadline == 0 || now.UnixNano() < deadline {
+		return
+	}
+	next := int64(0)
+	if all := p.all.Load(); all != nil {
+		for _, backend := range *all {
+			backend.recoverExpiredEjection(now)
+			until := backend.ejectedUntil.Load()
+			if until > now.UnixNano() && (next == 0 || until < next) {
+				next = until
+			}
+		}
+	}
+	p.nextRecovery.Store(next)
+	p.refreshAvailableLocked()
 }
 
 func (p *BackendPool) refreshAvailable() {

@@ -52,13 +52,13 @@ func (transport *retryTransport) Policy() RetryPolicy {
 }
 
 func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	policy := transport.Policy()
+	policy := requestRetryPolicy(request.Context(), transport.Policy())
 	maxAttempts := 1
 	if policy.allowsMethod(request.Method) && (request.Body == nil || request.Body == http.NoBody || request.GetBody != nil) {
 		maxAttempts = policy.MaxAttempts
 	}
 	excluded := make(map[string]struct{}, len(transport.pool.GetBackends()))
-	backend := transport.nextAvailableBackend(excluded)
+	backend := transport.nextAvailableBackend(request, excluded)
 	if backend == nil {
 		return nil, ErrNoBackend
 	}
@@ -119,7 +119,7 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 			return nil, roundTripError
 		}
 
-		nextBackend := transport.nextAvailableBackend(excluded)
+		nextBackend := transport.nextAvailableBackend(request, excluded)
 		if nextBackend == nil {
 			if response != nil {
 				setAttemptHeaders(response, backend.ID(), attempt, false)
@@ -147,6 +147,11 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 }
 
 func setAttemptHeaders(response *http.Response, backendID string, attempt int, budgetRejected bool) {
+	for name := range response.Header {
+		if strings.HasPrefix(strings.ToLower(name), "x-balancer-") {
+			response.Header.Del(name)
+		}
+	}
 	response.Header.Set("X-Balancer-Backend", backendID)
 	response.Header.Set("X-Balancer-Attempts", strconv.Itoa(attempt))
 	if budgetRejected {
@@ -154,9 +159,12 @@ func setAttemptHeaders(response *http.Response, backendID string, attempt int, b
 	}
 }
 
-func (transport *retryTransport) nextAvailableBackend(excluded map[string]struct{}) *Backend {
+func (transport *retryTransport) nextAvailableBackend(request *http.Request, excluded map[string]struct{}) *Backend {
 	for {
 		backend := transport.strategy.GetNextPeerExcluding(transport.pool, excluded)
+		if strategy, ok := transport.strategy.(RequestStrategy); ok {
+			backend = strategy.GetNextPeerForRequest(transport.pool, excluded, request)
+		}
 		if backend == nil {
 			return nil
 		}
@@ -192,6 +200,14 @@ func cloneForAttempt(request *http.Request, backend *Backend, attempt int) (*htt
 		outgoing.URL.RawQuery = backend.URL.RawQuery + "&" + request.URL.RawQuery
 	}
 	outgoing.RequestURI = ""
+	if policy, ok := requestUpstreamHost(request.Context()); ok {
+		switch {
+		case policy.rewrite != "":
+			outgoing.Host = policy.rewrite
+		case !policy.preserve:
+			outgoing.Host = backend.URL.Host
+		}
+	}
 	outgoing.Header.Set("X-Balancer-Backend-Attempt", backend.ID())
 	return outgoing, nil
 }

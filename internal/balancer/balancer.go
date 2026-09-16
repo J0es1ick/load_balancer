@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 	"time"
 )
 
 var ErrNoBackend = errors.New("no healthy backend available")
+var errRetryBodyRead = errors.New("failed to buffer retryable request body")
+var errRetryBodyTooLarge = errors.New("retryable request body exceeds configured limit")
 
 type verifiedClientIPContextKey struct{}
 type verifiedForwardedProtoContextKey struct{}
@@ -27,6 +31,8 @@ func verifiedClientIP(ctx context.Context) string {
 	value, _ := ctx.Value(verifiedClientIPContextKey{}).(string)
 	return value
 }
+
+func VerifiedClientIP(ctx context.Context) string { return verifiedClientIP(ctx) }
 
 func verifiedForwardedProto(ctx context.Context) string {
 	value, _ := ctx.Value(verifiedForwardedProtoContextKey{}).(string)
@@ -80,9 +86,7 @@ func NewLoadBalancer(pool *BackendPool, strategy Strategy, options ...LoadBalanc
 	lb := &LoadBalancer{pool: pool, strategy: strategy, transport: transport}
 	lb.proxy = &httputil.ReverseProxy{
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP"} {
-				proxyRequest.Out.Header.Del(header)
-			}
+			sanitizeProxyHeaders(proxyRequest.Out.Header)
 			if clientIP := verifiedClientIP(proxyRequest.In.Context()); clientIP != "" {
 				proxyRequest.Out.Header.Set("X-Forwarded-For", clientIP)
 				proxyRequest.Out.Header.Set("X-Real-IP", clientIP)
@@ -102,8 +106,17 @@ func NewLoadBalancer(pool *BackendPool, strategy Strategy, options ...LoadBalanc
 		},
 		Transport: transport,
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				http.Error(writer, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			if errors.Is(err, ErrNoBackend) {
 				http.Error(writer, "Service not available", http.StatusServiceUnavailable)
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				http.Error(writer, "Gateway timeout", http.StatusGatewayTimeout)
 				return
 			}
 			http.Error(writer, "Bad gateway", http.StatusBadGateway)
@@ -112,26 +125,48 @@ func NewLoadBalancer(pool *BackendPool, strategy Strategy, options ...LoadBalanc
 	return lb
 }
 
+func sanitizeProxyHeaders(headers http.Header) {
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if lower == "forwarded" || lower == "x-real-ip" || strings.HasPrefix(lower, "x-forwarded-") || strings.HasPrefix(lower, "x-balancer-") {
+			headers.Del(name)
+		}
+	}
+}
+
 func (lb *LoadBalancer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	lb.prepareReplayableBody(request)
+	if err := lb.prepareReplayableBody(request); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errRetryBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(writer, http.StatusText(status), status)
+		return
+	}
 	lb.proxy.ServeHTTP(writer, request)
 }
 
-func (lb *LoadBalancer) prepareReplayableBody(request *http.Request) {
-	policy := lb.transport.Policy()
+func (lb *LoadBalancer) prepareReplayableBody(request *http.Request) error {
+	policy := requestRetryPolicy(request.Context(), lb.transport.Policy())
 	if policy.MaxAttempts < 2 || !policy.allowsMethod(request.Method) || request.Body == nil || request.Body == http.NoBody || request.GetBody != nil {
-		return
+		return nil
 	}
 	if request.ContentLength < 0 || request.ContentLength > policy.BodyLimit {
-		return
+		return nil
 	}
 	body, err := io.ReadAll(io.LimitReader(request.Body, policy.BodyLimit+1))
-	if err != nil || int64(len(body)) > policy.BodyLimit {
-		return
+	if err != nil {
+		_ = request.Body.Close()
+		return fmt.Errorf("%w: %v", errRetryBodyRead, err)
+	}
+	if int64(len(body)) > policy.BodyLimit {
+		_ = request.Body.Close()
+		return errRetryBodyTooLarge
 	}
 	_ = request.Body.Close()
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	return nil
 }
 
 func (lb *LoadBalancer) UpdateRetryPolicy(policy RetryPolicy) { lb.transport.UpdatePolicy(policy) }
