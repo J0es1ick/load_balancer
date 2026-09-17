@@ -16,6 +16,7 @@ RUN mkdir -p /etc/nginx/templates \
     && chown -R nginx:nginx /etc/nginx/conf.d /etc/nginx/templates /var/cache/nginx /var/run
 COPY --chown=nginx:nginx nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --chown=nginx:nginx 10-admin-token.envsh /docker-entrypoint.d/10-admin-token.envsh
+RUN chmod 0755 /docker-entrypoint.d/10-admin-token.envsh
 COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
 
 USER nginx
