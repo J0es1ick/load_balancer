@@ -175,6 +175,16 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
 
+      - name: Frontend startup contract
+        run: |
+          docker run --rm --network none --add-host balancer:127.0.0.1 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /etc/nginx/conf.d:uid=101,gid=101,mode=0750 \
+            --tmpfs /var/cache/nginx:uid=101,gid=101,mode=0750 \
+            --tmpfs /var/run:uid=101,gid=101,mode=0750 --tmpfs /tmp \
+            --mount "type=bind,src=${{ github.workspace }}/frontend/scripts/test-container-startup.sh,dst=/tmp/test-container-startup.sh,readonly" \
+            --entrypoint sh load-balancer-frontend:ci /tmp/test-container-startup.sh
+
   deployment-smoke:
     runs-on: ubuntu-latest
     needs: [quality, security]
@@ -225,6 +235,12 @@ jobs:
           curl --fail --silent --show-error -X PATCH -H 'Content-Type: application/json' -H 'X-Balancer-CSRF: 1' --data '{"capacity":20,"refill_per_second":1}' http://127.0.0.1:3000/api/v1/rate-limit >/dev/null
           docker compose exec -T redis redis-cli FLUSHDB >/dev/null
           docker run --rm --network host -v "${{ github.workspace }}/load:/scripts:ro" grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f run -e TARGET_URL=http://127.0.0.1:8080 -e PROFILE=rate-limit -e RATE=5 -e DURATION=10s -e SUMMARY_PATH=/tmp/rate-limit-report.json /scripts/k6.js
+
+      - name: Deployment diagnostics
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail=100
 
       - name: Stop deployment template
         if: always()
