@@ -2,7 +2,7 @@
 
 L7 HTTP reverse proxy с round-robin балансировкой, active/passive health checks, ограниченными retry, распределённым token bucket и отдельной management plane. Репозиторий содержит приложение, интерактивную техническую документацию и шаблоны production-развёртывания.
 
-- Интерактивная документация: <https://j0es1ick.github.io/cloud_test_assignment/>
+- Интерактивная документация: <https://j0es1ick.github.io/load_balancer/>
 - Public data plane: `:8080`
 - Internal management plane: `:9090`
 - Internal health/metrics plane: `:9091`
