@@ -1,8 +1,8 @@
-export function renderGuide(mode: 'demo' | 'live'): string {
+export function renderGuide(mode: "demo" | "live"): string {
   const currentMode =
-    mode === 'demo'
-      ? 'Сейчас открыт demo: все запросы и изменения выполняет симулятор в браузере.'
-      : 'Сейчас открыт live: интерфейс подключён к запущенному Go-процессу.'
+    mode === "demo"
+      ? "Сейчас открыт demo: все запросы и изменения выполняет симулятор в браузере."
+      : "Сейчас открыт live: интерфейс подключён к запущенному Go-процессу.";
 
   return `
     <section class="guide-intro" aria-labelledby="guide-title">
@@ -54,14 +54,14 @@ export function renderGuide(mode: 'demo' | 'live'): string {
         <h2 id="modes-title">Demo и live выглядят одинаково, но делают разное</h2>
       </header>
       <div class="guide-mode-grid">
-        <article class="guide-mode-card ${mode === 'demo' ? 'is-current' : ''}">
-          <header><span>demo</span>${mode === 'demo' ? '<b>открыт сейчас</b>' : ''}</header>
+        <article class="guide-mode-card ${mode === "demo" ? "is-current" : ""}">
+          <header><span>demo</span>${mode === "demo" ? "<b>открыт сейчас</b>" : ""}</header>
           <h3>Безопасная интерактивная документация</h3>
           <p>Go-прокси и тестовые серверы не нужны. Поведение воспроизводит симулятор внутри браузера; он не отправляет запросы в вашу сеть.</p>
           <ul><li>Можно менять число включённых серверов.</li><li>Можно отправлять тестовый поток и получать 200, 429 или 503.</li><li>Изменения живут только в памяти вкладки, если отдельно не включено сохранение demo config.</li></ul>
         </article>
-        <article class="guide-mode-card ${mode === 'live' ? 'is-current' : ''}">
-          <header><span>live</span>${mode === 'live' ? '<b>открыт сейчас</b>' : ''}</header>
+        <article class="guide-mode-card ${mode === "live" ? "is-current" : ""}">
+          <header><span>live</span>${mode === "live" ? "<b>открыт сейчас</b>" : ""}</header>
           <h3>Консоль настоящего локального запуска</h3>
           <p>Интерфейс читает status и config из Go management API. Запрос из Request lab реально проходит через data plane, а разрешённые изменения влияют на запущенный экземпляр.</p>
           <ul><li>Используйте live только со своим тестовым или локальным запуском.</li><li>Роль operator (оператор) управляет тестовыми запросами и конечными серверами.</li><li>Apply, Rollback, стратегия и общий ограничитель требуют роль admin (администратор).</li></ul>
@@ -95,7 +95,7 @@ export function renderGuide(mode: 'demo' | 'live'): string {
         <li><span>2</span><div><strong>Посмотрите распределение.</strong><p>Нажмите <b>Start traffic</b>, подождите несколько секунд и нажмите <b>Stop traffic</b>. Диаграмма покажет, сколько запросов получил каждый сервер. <b>Burst ×20</b> отправляет 20 запросов одновременно.</p></div></li>
         <li><span>3</span><div><strong>Измените доступные серверы.</strong><p>В Clusters выберите другое число Enabled endpoints. Кнопка питания исключает сервер сразу. Кнопка <b>D</b> включает drain: новые запросы туда не идут, а уже начатые не обрываются.</p></div></li>
         <li><span>4</span><div><strong>Проверьте ограничение частоты.</strong><p>В Global token bucket задайте маленькую Capacity — запас разрешённых запросов, нажмите <b>Apply override</b> и запустите поток. Ответ 429 означает, что лимит сработал. <b>Reset my bucket</b> возвращает токены текущему тестовому клиенту.</p></div></li>
-        <li><span>5</span><div><strong>Попробуйте конфигурацию.</strong><p>В Config сначала используйте <b>Validate</b>. <b>Apply revision</b> создаёт новую версию, а <b>Rollback previous</b> возвращает предыдущую. В live эти две кнопки меняют настоящий процесс и доступны только администратору.</p></div></li>
+        <li><span>5</span><div><strong>Попробуйте конфигурацию.</strong><p>В Config сначала нажмите <b>Проверить</b>. <b>Применить</b> создаёт новую версию, а <b>Откатить конфигурацию</b> возвращает предыдущие настройки. В live эти две кнопки меняют настоящий процесс и доступны только администратору.</p></div></li>
       </ol>
     </section>
 
@@ -119,10 +119,12 @@ export function renderGuide(mode: 'demo' | 'live'): string {
       <div class="guide-action-list">
         <div><strong>Send once / Start traffic / Burst</strong><p>Создают тестовые запросы. В live они проходят через настоящий прокси, поэтому используйте безопасный тестовый путь.</p></div>
         <div><strong>Power / Enabled endpoints</strong><p>Разрешают или запрещают новые запросы выбранным endpoint-ам. Запись из конфигурации не удаляется.</p></div>
-        <div><strong>Drain</strong><p>Плавно выводит endpoint из работы: новые запросы не назначаются, уже выполняющиеся могут закончиться.</p></div>
+        <div><strong>Drain</strong><p>Плавно выводит endpoint из работы: новые запросы не назначаются, уже выполняющиеся могут закончиться. Смена маршрута, стратегии или обновление discovery не отменяет drain для того же сервера. Вернуть его можно кнопкой включения.</p></div>
         <div><strong>Strategy</strong><p>Меняет способ выбора сервера: по кругу, с весами, по минимальному числу активных запросов или по стабильному ключу.</p></div>
-        <div><strong>Validate</strong><p>Проверяет структуру и ссылки конфигурации, но не применяет её. Это безопасный первый шаг.</p></div>
-        <div><strong>Apply / Rollback</strong><p>Применяет новую версию или восстанавливает предыдущую. Сервер проверяет номер текущей revision, чтобы не затереть чужое изменение.</p></div>
+        <div><strong>Проверить · Validate</strong><p>Проверяет структуру и ссылки черновика, но не применяет его. Это безопасный первый шаг, а не проверка доступности настоящих серверов.</p></div>
+        <div><strong>Применить / Откатить</strong><p>Меняет конфигурацию текущего экземпляра. Сервер проверяет номер версии, чтобы не затереть чужое изменение. Уже выполняющиеся запросы и их учёт сохраняются; откат не обнуляет счётчики.</p></div>
+        <div><strong>Конфигурация и временные команды</strong><p>JSON в Config описывает настройки, а Clusters показывает фактическое состояние серверов. Включение и drain не переписывают JSON. Если явно поменять disabled в конфигурации, новое значение заменит такую временную команду.</p></div>
+        <div><strong>Сохранение</strong><p>В live Apply не записывает YAML на диск и не обновляет остальные реплики. Для постоянных изменений обновите файл развёртывания. В demo можно сохранить применённый JSON в браузере; черновик, drain и счётчики после перезагрузки не восстанавливаются.</p></div>
       </div>
     </section>
 
@@ -139,7 +141,7 @@ export function renderGuide(mode: 'demo' | 'live'): string {
         <article class="guide-card"><span>04</span><h3>Endpoint</h3><p>Один конкретный HTTP-сервер. Disable исключает его сразу; drain прекращает новые назначения без принудительного обрыва inflight-запросов.</p></article>
       </div>
       <section class="panel runbook">
-        <header class="panel-header"><div><span class="eyebrow">Current mode</span><h2>${mode === 'demo' ? 'Статическая документация и browser simulator' : 'Локальная интеграция с management API'}</h2></div><span class="mode-badge mode-badge--${mode}">${mode}</span></header>
+        <header class="panel-header"><div><span class="eyebrow">Current mode</span><h2>${mode === "demo" ? "Статическая документация и browser simulator" : "Локальная интеграция с management API"}</h2></div><span class="mode-badge mode-badge--${mode}">${mode}</span></header>
         <div class="runbook-steps">
           <article><b>Demo</b><code>npm run dev:demo</code><p>Не делает сетевых запросов к backend-ам. Эту сборку публикует GitHub Pages.</p></article>
           <article><b>Live frontend</b><code>npm run dev:live</code><p>Vite передаёт <code>/api/v1</code> в закрытый management listener. Credential остаётся на стороне proxy.</p></article>
@@ -152,5 +154,5 @@ export function renderGuide(mode: 'demo' | 'live'): string {
         <article><span>External edge</span><p>Публичный TLS, identity оператора, WAF/DDoS-защита и DNS должны находиться перед проектом — в Ingress или cloud load balancer.</p></article>
       </section>
     </section>
-  `
+  `;
 }
