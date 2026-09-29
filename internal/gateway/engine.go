@@ -40,19 +40,20 @@ type engineStats struct {
 }
 
 type Engine struct {
-	context      context.Context
-	cancel       context.CancelFunc
-	defaults     Defaults
-	observer     balancer.ProxyObserver
-	current      atomic.Pointer[runtimeSnapshot]
-	mu           sync.Mutex
-	statusMu     sync.RWMutex
-	closed       bool
-	nextRevision uint64
-	history      map[uint64]*config.GatewayConfig
-	order        []uint64
-	lastError    string
-	stats        engineStats
+	context       context.Context
+	cancel        context.CancelFunc
+	defaults      Defaults
+	observer      balancer.ProxyObserver
+	backendStates *balancer.BackendStateRegistry
+	current       atomic.Pointer[runtimeSnapshot]
+	mu            sync.Mutex
+	statusMu      sync.RWMutex
+	closed        bool
+	nextRevision  uint64
+	history       map[uint64]*config.GatewayConfig
+	order         []uint64
+	lastError     string
+	stats         engineStats
 }
 
 func New(ctx context.Context, gatewayConfig *config.GatewayConfig, defaults Defaults, observer balancer.ProxyObserver) (*Engine, error) {
@@ -60,12 +61,18 @@ func New(ctx context.Context, gatewayConfig *config.GatewayConfig, defaults Defa
 		ctx = context.Background()
 	}
 	lifecycle, cancel := context.WithCancel(ctx)
-	engine := &Engine{context: lifecycle, cancel: cancel, defaults: defaults, observer: observer, nextRevision: 1, history: make(map[uint64]*config.GatewayConfig)}
-	snapshot, err := buildSnapshot(lifecycle, ctx, gatewayConfig, defaults, observer, 1, 0)
+	engine := &Engine{context: lifecycle, cancel: cancel, defaults: defaults, observer: observer, backendStates: balancer.NewBackendStateRegistry(), nextRevision: 1, history: make(map[uint64]*config.GatewayConfig)}
+	snapshot, err := buildSnapshot(lifecycle, ctx, gatewayConfig, defaults, observer, 1, 0, engine.backendStates, nil)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		snapshot.close()
+		cancel()
+		return nil, err
+	}
+	snapshot.activate()
 	engine.current.Store(snapshot)
 	engine.remember(snapshot)
 	engine.stats.applySuccess.Add(1)
@@ -193,12 +200,19 @@ func (engine *Engine) applyLocked(ctx context.Context, gatewayConfig *config.Gat
 		previous = current.revision
 	}
 	revision := engine.nextRevision + 1
-	snapshot, err := buildSnapshot(engine.context, ctx, gatewayConfig, engine.defaults, engine.observer, revision, previous)
+	snapshot, err := buildSnapshot(engine.context, ctx, gatewayConfig, engine.defaults, engine.observer, revision, previous, engine.backendStates, current)
 	if err != nil {
 		engine.setLastError(err.Error())
 		engine.stats.applyFailures.Add(1)
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		snapshot.close()
+		engine.setLastError(err.Error())
+		engine.stats.applyFailures.Add(1)
+		return err
+	}
+	snapshot.activate()
 	engine.nextRevision = revision
 	engine.setLastError("")
 	old := engine.current.Swap(snapshot)

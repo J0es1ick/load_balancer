@@ -108,10 +108,14 @@ func (hc *HealthChecker) nextDelay() time.Duration {
 }
 
 func (hc *HealthChecker) Check(ctx context.Context) {
+	hc.CheckBackends(ctx, hc.pool.GetBackends())
+}
+
+func (hc *HealthChecker) CheckBackends(ctx context.Context, backends []*Backend) {
 	hc.checkMu.Lock()
 	defer hc.checkMu.Unlock()
 	settings := hc.Settings()
-	hc.check(ctx, hc.pool.GetBackends(), settings)
+	hc.check(ctx, backends, settings)
 }
 
 func (hc *HealthChecker) WarmReplacement(ctx context.Context, replacement *BackendReplacement, settings HealthSettings) error {
@@ -154,7 +158,9 @@ func (hc *HealthChecker) check(ctx context.Context, backends []*Backend, setting
 			defer waitGroup.Done()
 			for backend := range jobs {
 				healthy := checkBackend(ctx, backend.URL, settings)
-				backend.RecordHealthResult(healthy, settings.SuccessThreshold, settings.FailureThreshold)
+				if ctx.Err() == nil {
+					backend.RecordHealthResult(healthy, settings.SuccessThreshold, settings.FailureThreshold)
+				}
 			}
 		}()
 	}

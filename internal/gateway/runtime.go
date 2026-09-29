@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,13 +19,15 @@ import (
 )
 
 type runtimeCluster struct {
-	config       config.GatewayClusterConfig
-	pool         *balancer.BackendPool
-	loadBalancer *balancer.LoadBalancer
-	health       *balancer.HealthChecker
-	transport    *http.Transport
-	discoveryMu  sync.RWMutex
-	discovery    DiscoveryStatus
+	config        config.GatewayClusterConfig
+	pool          *balancer.BackendPool
+	loadBalancer  *balancer.LoadBalancer
+	health        *balancer.HealthChecker
+	transport     *http.Transport
+	stateLease    *balancer.BackendStateLease
+	refreshHealth bool
+	discoveryMu   sync.RWMutex
+	discovery     DiscoveryStatus
 }
 
 type runtimeSnapshot struct {
@@ -45,7 +48,7 @@ type runtimeSnapshot struct {
 	closeOnce        sync.Once
 }
 
-func buildSnapshot(lifecycle, operation context.Context, gatewayConfig *config.GatewayConfig, defaults Defaults, observer balancer.ProxyObserver, revision, previous uint64) (*runtimeSnapshot, error) {
+func buildSnapshot(lifecycle, operation context.Context, gatewayConfig *config.GatewayConfig, defaults Defaults, observer balancer.ProxyObserver, revision, previous uint64, states *balancer.BackendStateRegistry, current *runtimeSnapshot) (*runtimeSnapshot, error) {
 	normalized, err := normalizeConfig(gatewayConfig, defaults)
 	if err != nil {
 		return nil, err
@@ -71,11 +74,18 @@ func buildSnapshot(lifecycle, operation context.Context, gatewayConfig *config.G
 		warmupTimeout = 30 * time.Second
 	}
 	for _, clusterConfig := range normalized.Clusters {
-		cluster, clusterErr := buildCluster(operation, clusterConfig, defaults, observer, warmupTimeout)
+		var previousCluster *runtimeCluster
+		if current != nil {
+			previousCluster = current.clusters[clusterConfig.ID]
+		}
+		cluster, clusterErr := buildCluster(operation, clusterConfig, defaults, observer, warmupTimeout, states, previousCluster)
 		if clusterErr != nil {
 			return fail(fmt.Errorf("build cluster %q: %w", clusterConfig.ID, clusterErr))
 		}
 		snapshot.clusters[clusterConfig.ID] = cluster
+		if previousCluster != nil && previousCluster.config.Discovery == clusterConfig.Discovery {
+			cluster.setDiscovery(previousCluster.discoveryStatus())
+		}
 	}
 	routes, err := compileRoutes(normalized.Routes)
 	if err != nil {
@@ -85,7 +95,7 @@ func buildSnapshot(lifecycle, operation context.Context, gatewayConfig *config.G
 	return snapshot, nil
 }
 
-func buildCluster(operation context.Context, value config.GatewayClusterConfig, defaults Defaults, observer balancer.ProxyObserver, warmupTimeout time.Duration) (*runtimeCluster, error) {
+func buildCluster(operation context.Context, value config.GatewayClusterConfig, defaults Defaults, observer balancer.ProxyObserver, warmupTimeout time.Duration, states *balancer.BackendStateRegistry, previous *runtimeCluster) (*runtimeCluster, error) {
 	specs := make([]balancer.BackendSpec, 0, len(value.Endpoints))
 	for _, endpoint := range value.Endpoints {
 		specs = append(specs, balancer.BackendSpec{ID: endpoint.ID, URL: endpoint.URL, Weight: endpoint.Weight, Disabled: endpoint.Disabled})
@@ -99,6 +109,13 @@ func buildCluster(operation context.Context, value config.GatewayClusterConfig, 
 	if err != nil {
 		return nil, err
 	}
+	lease := states.Reserve(value.ID, pool)
+	built := false
+	defer func() {
+		if !built {
+			lease.Close()
+		}
+	}()
 	transport, err := clusterTransport(value)
 	if err != nil {
 		return nil, err
@@ -114,11 +131,13 @@ func buildCluster(operation context.Context, value config.GatewayClusterConfig, 
 		return nil, err
 	}
 	loadBalancer := balancer.NewLoadBalancer(pool, strategy, balancer.LoadBalancerOptions{Transport: roundTripper, Retry: retryPolicy(value.Retry), Observer: observer})
-	cluster := &runtimeCluster{config: value, pool: pool, loadBalancer: loadBalancer, transport: transport, discovery: DiscoveryStatus{Type: value.Discovery.Type}}
+	refreshHealth := previous == nil || !reflect.DeepEqual(previous.config.Health, value.Health) || !reflect.DeepEqual(previous.config.TLS, value.TLS) || previous.config.Transport.Protocol != value.Transport.Protocol
+	cluster := &runtimeCluster{config: value, pool: pool, loadBalancer: loadBalancer, transport: transport, stateLease: lease, refreshHealth: refreshHealth, discovery: DiscoveryStatus{Type: value.Discovery.Type}}
 	if !value.Health.Enabled {
 		for _, backend := range pool.GetBackends() {
 			backend.SetAlive(true)
 		}
+		built = true
 		return cluster, nil
 	}
 	checker, err := balancer.NewHealthChecker(pool, health)
@@ -127,11 +146,20 @@ func buildCluster(operation context.Context, value config.GatewayClusterConfig, 
 		return nil, err
 	}
 	cluster.health = checker
-	if len(specs) > 0 {
+	var probes []*balancer.Backend
+	reusesEnabled := false
+	for _, backend := range pool.GetBackends() {
+		if !lease.Reused(backend) || refreshHealth {
+			probes = append(probes, backend)
+		} else if backend.IsEnabled() {
+			reusesEnabled = true
+		}
+	}
+	if len(probes) > 0 {
 		warmContext, cancel := context.WithTimeout(operation, warmupTimeout)
 		defer cancel()
 		for range health.SuccessThreshold {
-			checker.Check(warmContext)
+			checker.CheckBackends(warmContext, probes)
 		}
 		if warmContext.Err() != nil {
 			transport.CloseIdleConnections()
@@ -143,11 +171,12 @@ func buildCluster(operation context.Context, value config.GatewayClusterConfig, 
 				enabled++
 			}
 		}
-		if enabled > 0 && !pool.Ready() {
+		if enabled > 0 && !reusesEnabled && !pool.Ready() {
 			transport.CloseIdleConnections()
 			return nil, fmt.Errorf("no enabled endpoint passed warmup")
 		}
 	}
+	built = true
 	return cluster, nil
 }
 
@@ -252,6 +281,12 @@ func rendezvousKey(expression string) func(*http.Request) string {
 	}
 }
 
+func (snapshot *runtimeSnapshot) activate() {
+	for _, cluster := range snapshot.clusters {
+		cluster.stateLease.Activate(cluster.refreshHealth)
+	}
+}
+
 func (snapshot *runtimeSnapshot) start() {
 	for _, cluster := range snapshot.clusters {
 		if cluster.health != nil {
@@ -292,6 +327,7 @@ func (snapshot *runtimeSnapshot) close() {
 			snapshot.cancel()
 		}
 		for _, cluster := range snapshot.clusters {
+			cluster.stateLease.Close()
 			cluster.transport.CloseIdleConnections()
 		}
 	})

@@ -58,15 +58,17 @@ func TestBackendPoolReloadAppliesDeclarativeDisabledState(t *testing.T) {
 
 	require.NoError(t, pool.ReplaceBackends([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}))
 	require.Same(t, backend, pool.GetBackends()[0], "stable backend identity should preserve counters and health")
-	assert.True(t, backend.IsEnabled())
-	assert.False(t, backend.IsDraining(), "declarative reload supersedes an ephemeral drain")
-	assert.True(t, backend.IsAlive())
+	assert.False(t, backend.IsEnabled())
+	assert.True(t, backend.IsDraining(), "an unchanged declaration must not cancel an operator drain")
+	assert.False(t, backend.IsAlive())
 
 	require.NoError(t, pool.ReplaceBackends([]balancer.BackendSpec{{ID: "api", URL: "http://api:80", Disabled: true}}))
 	require.Same(t, backend, pool.GetBackends()[0])
 	assert.False(t, backend.IsEnabled())
 	assert.False(t, backend.IsDraining())
 	assert.False(t, backend.IsAlive())
+	require.NoError(t, pool.ReplaceBackends([]balancer.BackendSpec{{ID: "api", URL: "http://api:80"}}))
+	assert.True(t, backend.IsEnabled(), "an explicit disabled change supersedes the override")
 }
 
 func TestBackendPoolPublishesConcurrentHealthChangesConsistently(t *testing.T) {

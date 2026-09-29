@@ -26,21 +26,11 @@ type PassivePolicy struct {
 }
 
 type Backend struct {
-	stateMu            sync.Mutex
-	id                 string
-	URL                *url.URL
-	weight             atomic.Int64
-	healthy            atomic.Bool
-	enabled            atomic.Bool
-	requests           atomic.Uint64
-	passiveFailures    atomic.Int64
-	consecutiveSuccess atomic.Int64
-	consecutiveFailure atomic.Int64
-	ejectedUntil       atomic.Int64
-	healthySince       atomic.Int64
-	inflight           atomic.Int64
-	draining           atomic.Bool
-	pool               *BackendPool
+	*backendState
+	id     string
+	URL    *url.URL
+	weight atomic.Int64
+	pool   *BackendPool
 }
 
 func (b *Backend) ID() string { return b.id }
@@ -82,6 +72,9 @@ func (b *Backend) RecordHealthResult(success bool, successThreshold, failureThre
 }
 
 func (b *Backend) recordHealthResultLocked(success bool, successThreshold, failureThreshold int) bool {
+	if b.healthOwner != nil && b.healthOwner != b.pool {
+		return false
+	}
 	if success {
 		b.consecutiveFailure.Store(0)
 		if until := b.ejectedUntil.Load(); until > time.Now().UnixNano() {
@@ -111,12 +104,9 @@ func (b *Backend) RecordPassiveFailure(policy PassivePolicy) {
 	}
 	recoverAt := time.Now().Add(policy.Cooldown).UnixNano()
 	b.ejectedUntil.Store(recoverAt)
-	changed := b.setAliveLocked(false)
+	b.setAliveLocked(false)
 	b.stateMu.Unlock()
-	if b.pool != nil {
-		b.pool.scheduleRecovery(recoverAt)
-	}
-	b.refreshAvailability(changed)
+	b.refreshAvailability(true)
 }
 
 func (b *Backend) RecordPassiveSuccess() {
@@ -126,8 +116,10 @@ func (b *Backend) RecordPassiveSuccess() {
 }
 
 func (b *Backend) refreshAvailability(changed bool) {
-	if changed && b.pool != nil {
-		b.pool.refreshAvailable()
+	if changed {
+		b.stateMu.Lock()
+		b.invalidateLocked()
+		b.stateMu.Unlock()
 	}
 }
 
@@ -155,17 +147,20 @@ func (b *Backend) recoverExpiredEjection(now time.Time) bool {
 	}
 	b.ejectedUntil.Store(0)
 	b.passiveFailures.Store(0)
-	return b.setAliveLocked(true)
+	changed := b.setAliveLocked(true)
+	b.invalidateLocked()
+	return changed
 }
 
 func (b *Backend) SetEnabled(enabled bool) {
 	b.stateMu.Lock()
+	wasDraining := b.draining.Load()
 	if enabled {
 		b.draining.Store(false)
 	}
 	changed := b.enabled.Swap(enabled) != enabled
 	b.stateMu.Unlock()
-	b.refreshAvailability(changed)
+	b.refreshAvailability(changed || wasDraining)
 }
 
 func (b *Backend) IsEnabled() bool { return b.enabled.Load() }
@@ -178,35 +173,23 @@ func (b *Backend) SetDraining(draining bool) {
 		b.enabled.Store(false)
 	}
 	b.stateMu.Unlock()
-	if b.pool != nil {
-		b.pool.refreshAvailable()
-	}
+	b.refreshAvailability(true)
 }
 
 func (b *Backend) IsDraining() bool { return b.draining.Load() }
 
 func (b *Backend) TryAcquire() bool {
-	policy := b.pool.PassivePolicy()
-	limit := policy.MaxConcurrentRequests
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	limit := b.maxConcurrent
 	if limit < 1 {
 		limit = 1
 	}
-	for {
-		if !b.IsAlive() {
-			return false
-		}
-		current := b.inflight.Load()
-		if current >= limit {
-			return false
-		}
-		if b.inflight.CompareAndSwap(current, current+1) {
-			if b.IsAlive() {
-				return true
-			}
-			b.inflight.Add(-1)
-			return false
-		}
+	if !b.IsAlive() || b.inflight.Load() >= limit {
+		return false
 	}
+	b.inflight.Add(1)
+	return true
 }
 
 func (b *Backend) Release() {
@@ -283,6 +266,8 @@ type BackendPool struct {
 	available    atomic.Pointer[backendList]
 	policy       atomic.Pointer[PassivePolicy]
 	nextRecovery atomic.Int64
+	stateVersion atomic.Uint64
+	cacheVersion atomic.Uint64
 }
 
 type BackendReplacement struct {
@@ -303,6 +288,7 @@ func NewBackendPool(specs []BackendSpec, policy ...PassivePolicy) (*BackendPool,
 	}
 	for _, backend := range backends {
 		backend.pool = pool
+		backend.pools[pool] = struct{}{}
 	}
 	pool.all.Store(&backends)
 	pool.refreshAvailable()
@@ -330,7 +316,10 @@ func (p *BackendPool) buildBackends(specs []BackendSpec) (backendList, error) {
 		if weight < 1 {
 			weight = 1
 		}
-		backend := &Backend{id: spec.ID, URL: backendURL}
+		backend := &Backend{id: spec.ID, URL: backendURL, backendState: &backendState{
+			pools: make(map[*BackendPool]struct{}), configuredDisabled: spec.Disabled,
+			maxConcurrent: p.PassivePolicy().MaxConcurrentRequests,
+		}}
 		backend.weight.Store(int64(weight))
 		backend.enabled.Store(!spec.Disabled)
 		backends = append(backends, backend)
@@ -370,6 +359,8 @@ func (p *BackendPool) CommitReplacement(replacement *BackendReplacement) error {
 			replacement.backends[index] = previous
 		} else {
 			backend.pool = p
+			backend.pools[p] = struct{}{}
+			backend.maxConcurrent = p.PassivePolicy().MaxConcurrentRequests
 		}
 	}
 	p.all.Store(&replacement.backends)
@@ -379,10 +370,13 @@ func (p *BackendPool) CommitReplacement(replacement *BackendReplacement) error {
 
 func (b *Backend) applyReplacementState(enabled, warmedHealthy bool, weight int) {
 	b.stateMu.Lock()
-	b.draining.Store(false)
-	b.enabled.Store(enabled)
+	if b.configuredDisabled != !enabled {
+		b.configuredDisabled = !enabled
+		b.draining.Store(false)
+		b.enabled.Store(enabled)
+	}
 	b.weight.Store(int64(weight))
-	if warmedHealthy && !b.healthy.Load() {
+	if warmedHealthy && !b.healthy.Load() && !b.IsEjected() {
 		b.setAliveLocked(true)
 	}
 	b.stateMu.Unlock()
@@ -424,6 +418,11 @@ func (replacement *BackendReplacement) needsWarmup() bool {
 
 func (p *BackendPool) UpdatePassivePolicy(policy PassivePolicy) {
 	p.policy.Store(&policy)
+	for _, backend := range p.GetBackends() {
+		backend.stateMu.Lock()
+		backend.maxConcurrent = policy.MaxConcurrentRequests
+		backend.stateMu.Unlock()
+	}
 }
 
 func (p *BackendPool) PassivePolicy() PassivePolicy {
@@ -445,6 +444,9 @@ func (p *BackendPool) GetBackends() []*Backend {
 func (p *BackendPool) AvailableBackends() []*Backend {
 	if deadline := p.nextRecovery.Load(); deadline > 0 && time.Now().UnixNano() >= deadline {
 		p.recoverExpiredEjections(time.Now())
+	}
+	if p.stateVersion.Load() != p.cacheVersion.Load() {
+		p.refreshAvailable()
 	}
 	current := p.available.Load()
 	if current == nil {
@@ -472,6 +474,7 @@ func (p *BackendPool) recoverExpiredEjections(now time.Time) {
 	if deadline == 0 || now.UnixNano() < deadline {
 		return
 	}
+	p.nextRecovery.Store(0)
 	next := int64(0)
 	if all := p.all.Load(); all != nil {
 		for _, backend := range *all {
@@ -482,7 +485,9 @@ func (p *BackendPool) recoverExpiredEjections(now time.Time) {
 			}
 		}
 	}
-	p.nextRecovery.Store(next)
+	if next > 0 {
+		p.scheduleRecovery(next)
+	}
 	p.refreshAvailableLocked()
 }
 
@@ -493,6 +498,7 @@ func (p *BackendPool) refreshAvailable() {
 }
 
 func (p *BackendPool) refreshAvailableLocked() {
+	version := p.stateVersion.Load()
 	all := p.all.Load()
 	available := make(backendList, 0)
 	if all != nil {
@@ -504,6 +510,7 @@ func (p *BackendPool) refreshAvailableLocked() {
 		}
 	}
 	p.available.Store(&available)
+	p.cacheVersion.Store(version)
 }
 
 func (p *BackendPool) MarkBackendStatus(backendURL *url.URL, alive bool) {
