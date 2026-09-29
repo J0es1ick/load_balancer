@@ -43,12 +43,42 @@
       "endpoints": [
         { "id": "backend-1", "url": "http://backend1:80", "weight": 1 },
         { "id": "backend-2", "url": "http://backend2:80", "weight": 1 },
-        { "id": "backend-3", "url": "http://backend3:80", "weight": 1, "disabled": true },
-        { "id": "backend-4", "url": "http://backend4:80", "weight": 1, "disabled": true },
-        { "id": "backend-5", "url": "http://backend5:80", "weight": 1, "disabled": true },
-        { "id": "backend-6", "url": "http://backend6:80", "weight": 1, "disabled": true },
-        { "id": "backend-7", "url": "http://backend7:80", "weight": 1, "disabled": true },
-        { "id": "backend-8", "url": "http://backend8:80", "weight": 1, "disabled": true }
+        {
+          "id": "backend-3",
+          "url": "http://backend3:80",
+          "weight": 1,
+          "disabled": true
+        },
+        {
+          "id": "backend-4",
+          "url": "http://backend4:80",
+          "weight": 1,
+          "disabled": true
+        },
+        {
+          "id": "backend-5",
+          "url": "http://backend5:80",
+          "weight": 1,
+          "disabled": true
+        },
+        {
+          "id": "backend-6",
+          "url": "http://backend6:80",
+          "weight": 1,
+          "disabled": true
+        },
+        {
+          "id": "backend-7",
+          "url": "http://backend7:80",
+          "weight": 1,
+          "disabled": true
+        },
+        {
+          "id": "backend-8",
+          "url": "http://backend8:80",
+          "weight": 1,
+          "disabled": true
+        }
       ],
       "health": {
         "enabled": true,
