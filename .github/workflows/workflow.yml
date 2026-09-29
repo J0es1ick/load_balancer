@@ -46,10 +46,10 @@ jobs:
       TEST_POSTGRES_PASSWORD: integration-test-only
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go.mod
           cache: true
@@ -76,7 +76,7 @@ jobs:
         run: go test -run '^$' -bench='Benchmark(RoundRobinStrategy|LocalStoreTake)$' -benchmem ./internal/...
 
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 22.23.1
           cache: npm
@@ -137,15 +137,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          # Gitleaks scans the complete pushed commit range. A shallow clone can
-          # omit the parent of the first commit and turn a clean scan into an
-          # "ambiguous argument" infrastructure failure.
           fetch-depth: 0
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -157,7 +154,7 @@ jobs:
         run: docker build --pull --tag load-balancer-frontend:ci ./frontend
 
       - name: Container vulnerability scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: load-balancer:ci
           format: table
@@ -196,7 +193,7 @@ jobs:
       BALANCER_METRICS_TOKEN: ci-only-metrics-token
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Start deployment template
         run: docker compose up --build --detach
@@ -259,10 +256,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 22.23.1
           cache: npm
@@ -278,16 +275,16 @@ jobs:
           npm run build:demo
 
       - name: Configure Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
           path: frontend/dist
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
 
   release-images:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -300,7 +297,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Authenticate to GHCR
         shell: bash
@@ -327,7 +324,7 @@ jobs:
           echo "frontend_digest=$frontend_digest" >> "$GITHUB_OUTPUT"
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
           cosign-release: v3.0.6
 
@@ -353,14 +350,14 @@ jobs:
           cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer https://token.actions.githubusercontent.com "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
 
       - name: Attest balancer provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
           subject-name: ${{ steps.images.outputs.balancer_image }}
           subject-digest: ${{ steps.images.outputs.balancer_digest }}
           push-to-registry: true
 
       - name: Attest frontend provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
           subject-name: ${{ steps.images.outputs.frontend_image }}
           subject-digest: ${{ steps.images.outputs.frontend_digest }}

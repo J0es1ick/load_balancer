@@ -136,8 +136,6 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 			}
 			return nil, roundTripError
 		}
-		// Closing instead of draining bounds retry latency even when an upstream
-		// sends retryable headers and then stalls its response body.
 		if response != nil {
 			_ = response.Body.Close()
 		}
